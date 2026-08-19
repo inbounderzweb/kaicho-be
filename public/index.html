@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kaicho API</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --bg-glow: #10161f;
+    --card: #12181f;
+    --card-border: #232b36;
+    --text: #e7ecf2;
+    --muted: #8a96a3;
+    --accent: #6ee7b7;
+    --accent-2: #7aa2f7;
+    --danger: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 20% -10%, #1a2433 0%, transparent 60%),
+      radial-gradient(1000px 500px at 100% 0%, #142018 0%, transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font-family: "SF Mono", ui-monospace, "JetBrains Mono", Consolas, monospace;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 64px 24px 40px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 40px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: #0b0f14;
+    font-size: 18px;
+  }
+  .brand h1 {
+    font-size: 18px;
+    margin: 0;
+    letter-spacing: 0.3px;
+  }
+  .brand span {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--card-border);
+    background: var(--card);
+    font-size: 13px;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    box-shadow: 0 0 0 0 rgba(110, 231, 183, 0.6);
+  }
+  .dot.ok {
+    background: var(--accent);
+    animation: pulse 2s infinite;
+  }
+  .dot.bad {
+    background: var(--danger);
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0.55); }
+    70% { box-shadow: 0 0 0 8px rgba(110, 231, 183, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0); }
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 20px;
+  }
+  .card .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-bottom: 10px;
+  }
+  .card .value {
+    font-size: 22px;
+    font-weight: 600;
+  }
+  .card .value.small {
+    font-size: 15px;
+    color: var(--accent-2);
+  }
+  .card.wide {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .endpoints {
+    margin-top: 32px;
+  }
+  .endpoints h2 {
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-bottom: 12px;
+    font-weight: 500;
+  }
+  .endpoint {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .endpoint .method {
+    color: #0b0f14;
+    background: var(--accent-2);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 11px;
+  }
+  .endpoint a {
+    color: var(--text);
+    text-decoration: none;
+  }
+  .endpoint a:hover {
+    color: var(--accent);
+  }
+  .endpoint .desc {
+    margin-left: auto;
+    color: var(--muted);
+  }
+  footer {
+    margin-top: 40px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+  }
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo">K</div>
+        <div>
+          <h1>Kaicho API</h1>
+          <span id="env-label">&mdash;</span>
+        </div>
+      </div>
+      <div class="pill">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">checking...</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">Version</div>
+        <div class="value" id="version">&mdash;</div>
+      </div>
+      <div class="card">
+        <div class="label">Uptime</div>
+        <div class="value" id="uptime">&mdash;</div>
+      </div>
+      <div class="card">
+        <div class="label">Database</div>
+        <div class="value" id="database">&mdash;</div>
+      </div>
+      <div class="card">
+        <div class="label">Node.js</div>
+        <div class="value" id="node">&mdash;</div>
+      </div>
+      <div class="card wide">
+        <div>
+          <div class="label">Last checked</div>
+          <div class="value small" id="timestamp">&mdash;</div>
+        </div>
+        <div>
+          <div class="label">Started at</div>
+          <div class="value small" id="started-at">&mdash;</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="endpoints">
+      <h2>Endpoints</h2>
+      <div class="endpoint">
+        <span class="method">GET</span>
+        <a href="/api/health">/api/health</a>
+        <span class="desc">Service health &amp; uptime</span>
+      </div>
+      <div class="endpoint">
+        <span class="method">GET</span>
+        <a href="/api/version">/api/version</a>
+        <span class="desc">App name, version &amp; environment</span>
+      </div>
+    </div>
+
+    <footer>Kaicho backend &middot; auto-refreshing every 5s</footer>
+  </div>
+
+  <script>
+    function formatUptime(seconds) {
+      const d = Math.floor(seconds / 86400);
+      const h = Math.floor((seconds % 86400) / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      const parts = [];
+      if (d) parts.push(d + "d");
+      if (h) parts.push(h + "h");
+      if (m) parts.push(m + "m");
+      parts.push(s + "s");
+      return parts.join(" ");
+    }
+
+    async function refresh() {
+      const dot = document.getElementById("status-dot");
+      const statusText = document.getElementById("status-text");
+      try {
+        const [healthRes, versionRes] = await Promise.all([
+          fetch("/api/health").then((r) => r.json()),
+          fetch("/api/version").then((r) => r.json()),
+        ]);
+
+        dot.className = "dot ok";
+        statusText.textContent = "operational";
+
+        document.getElementById("version").textContent = "v" + versionRes.version;
+        document.getElementById("node").textContent = versionRes.node;
+        document.getElementById("env-label").textContent = versionRes.environment + " &middot; " + versionRes.name;
+        document.getElementById("env-label").innerHTML = versionRes.environment + " &middot; " + versionRes.name;
+
+        document.getElementById("uptime").textContent = formatUptime(healthRes.uptime);
+        document.getElementById("database").textContent = healthRes.database;
+        document.getElementById("timestamp").textContent = new Date(healthRes.timestamp).toLocaleTimeString();
+        document.getElementById("started-at").textContent = new Date(healthRes.startedAt).toLocaleTimeString();
+      } catch (err) {
+        dot.className = "dot bad";
+        statusText.textContent = "unreachable";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

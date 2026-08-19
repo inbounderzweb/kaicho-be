@@ -1,0 +1,136 @@
+import jwt from "jsonwebtoken";
+import { env } from "../../config/env";
+import { AppError } from "../../common/errors";
+import { generateOtp, hashOtp, compareOtp } from "../../common/utils/otp";
+import { getSmsProvider } from "../../common/sms";
+import { OtpVerification, User, UserDocument } from "../../database/models";
+
+const PURPOSE = "login";
+
+export interface AuthUserDto {
+  id: string;
+  phone: string;
+  countryCode: string;
+  phoneVerified: boolean;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  avatar?: string;
+  createdAt: Date;
+  lastLoginAt?: Date;
+}
+
+export function toUserDto(user: UserDocument): AuthUserDto {
+  return {
+    id: user._id.toString(),
+    phone: user.phone,
+    countryCode: user.countryCode,
+    phoneVerified: user.phoneVerified,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    avatar: user.avatar,
+    createdAt: user.createdAt,
+    lastLoginAt: user.lastLoginAt,
+  };
+}
+
+export function signSessionToken(user: UserDocument): string {
+  return jwt.sign({ sub: user._id.toString(), tv: user.tokenVersion }, env.jwtSecret, {
+    expiresIn: env.jwtExpiresIn,
+  } as jwt.SignOptions);
+}
+
+export async function sendOtp(phone: string, countryCode?: string): Promise<void> {
+  const lastOtp = await OtpVerification.findOne({ phone, purpose: PURPOSE })
+    .sort({ createdAt: -1 })
+    .exec();
+console.log("<><>lastOtp",lastOtp)
+  if (lastOtp) {
+    const secondsSinceLast =
+      (Date.now() - lastOtp.createdAt.getTime()) / 1000;
+    if (secondsSinceLast < env.otpResendCooldownSeconds) {
+      const wait = Math.ceil(env.otpResendCooldownSeconds - secondsSinceLast);
+      throw new AppError(`Please wait ${wait}s before requesting another OTP`, 429);
+    }
+  }
+
+  await OtpVerification.deleteMany({ phone, purpose: PURPOSE });
+
+  const otp = generateOtp(env.otpLength);
+  const otpHash = await hashOtp(otp);
+  const expiresAt = new Date(Date.now() + env.otpExpiryMinutes * 60 * 1000);
+
+  await OtpVerification.create({
+    phone,
+    otpHash,
+    purpose: PURPOSE,
+    expiresAt,
+    attempts: 0,
+    verified: false,
+  });
+
+  const message = `${otp} is your Kaicho verification code. Valid for ${env.otpExpiryMinutes} minutes.`;
+  await getSmsProvider().sendSms(`${countryCode ?? env.defaultCountryCode}${phone}`, message);
+}
+
+export interface VerifyOtpResult {
+  token: string;
+  user: AuthUserDto;
+}
+
+export async function verifyOtp(
+  phone: string,
+  otp: string,
+  countryCode?: string
+): Promise<VerifyOtpResult> {
+  const record = await OtpVerification.findOne({
+    phone,
+    purpose: PURPOSE,
+    verified: false,
+    expiresAt: { $gt: new Date() },
+  })
+    .sort({ createdAt: -1 })
+    .exec();
+
+  if (!record) {
+    throw new AppError("OTP expired or not requested. Please request a new one.", 400);
+  }
+
+  if (record.attempts >= env.otpMaxAttempts) {
+    throw new AppError("Too many incorrect attempts. Please request a new OTP.", 400);
+  }
+
+  const isMatch = await compareOtp(otp, record.otpHash);
+
+  if (!isMatch) {
+    record.attempts += 1;
+    await record.save();
+    const remaining = env.otpMaxAttempts - record.attempts;
+    if (remaining <= 0) {
+      throw new AppError("Too many incorrect attempts. Please request a new OTP.", 400);
+    }
+    throw new AppError(`Incorrect OTP. ${remaining} attempt(s) remaining.`, 400);
+  }
+
+  record.verified = true;
+  await record.save();
+
+  let user = await User.findOne({ phone }).exec();
+  if (!user) {
+    user = await User.create({
+      phone,
+      countryCode: countryCode ?? env.defaultCountryCode,
+      phoneVerified: true,
+      lastLoginAt: new Date(),
+    });
+  } else {
+    user.phoneVerified = true;
+    user.lastLoginAt = new Date();
+    await user.save();
+  }
+
+  const token = signSessionToken(user);
+
+  return { token, user: toUserDto(user) };
+}
