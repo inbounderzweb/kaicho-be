@@ -4,6 +4,6 @@ import { requireAdminKey } from "../../common/middleware/requireAdminKey";
 
 const router = Router();
 
-router.get("/admin@124", requireAdminKey, getAdminList);
+router.get("/", requireAdminKey, getAdminList);
 
 export default router;

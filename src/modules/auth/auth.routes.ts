@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { sendOtp, verifyOtp, getMe, logout } from "./auth.controller";
-import { sendOtpSchema, verifyOtpSchema } from "./auth.validation";
+import { sendOtp, verifyOtp, getMe, logout, updateMe } from "./auth.controller";
+import { sendOtpSchema, verifyOtpSchema, updateMeSchema } from "./auth.validation";
 import {
   validateBody,
   otpIpLimiter,
@@ -27,6 +27,8 @@ router.post(
 );
 
 router.get("/me", requireAuth, getMe);
+
+router.patch("/me", requireAuth, validateBody(updateMeSchema), updateMe);
 
 router.post("/logout", logout);
 

@@ -16,6 +16,7 @@ export interface AuthUserDto {
   lastName?: string;
   email?: string;
   avatar?: string;
+  role: UserDocument["role"];
   createdAt: Date;
   lastLoginAt?: Date;
 }
@@ -30,6 +31,7 @@ export function toUserDto(user: UserDocument): AuthUserDto {
     lastName: user.lastName,
     email: user.email,
     avatar: user.avatar,
+    role: user.role,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
   };
@@ -45,7 +47,7 @@ export async function sendOtp(phone: string, countryCode?: string): Promise<void
   const lastOtp = await OtpVerification.findOne({ phone, purpose: PURPOSE })
     .sort({ createdAt: -1 })
     .exec();
-console.log("<><>lastOtp",lastOtp)
+
   if (lastOtp) {
     const secondsSinceLast =
       (Date.now() - lastOtp.createdAt.getTime()) / 1000;
@@ -74,9 +76,30 @@ console.log("<><>lastOtp",lastOtp)
   await getSmsProvider().sendSms(`${countryCode ?? env.defaultCountryCode}${phone}`, message);
 }
 
+// Best-effort: called from logout, which must succeed even if the presented
+// cookie is missing, malformed, or already expired (the end state — "not
+// logged in" — is already true in that case). Only bumps tokenVersion when
+// a real, still-decodable session is found, which revokes that token (and
+// any other copy of it) immediately, regardless of its original expiry.
+export async function invalidateSession(token: string | undefined): Promise<void> {
+  if (!token) return;
+
+  let payload: { sub: string };
+  try {
+    payload = jwt.verify(token, env.jwtSecret, { ignoreExpiration: true }) as {
+      sub: string;
+    };
+  } catch {
+    return;
+  }
+
+  await User.findByIdAndUpdate(payload.sub, { $inc: { tokenVersion: 1 } }).exec();
+}
+
 export interface VerifyOtpResult {
   token: string;
   user: AuthUserDto;
+  requiresName: boolean;
 }
 
 export async function verifyOtp(
@@ -132,5 +155,22 @@ export async function verifyOtp(
 
   const token = signSessionToken(user);
 
-  return { token, user: toUserDto(user) };
+  return { token, user: toUserDto(user), requiresName: !user.firstName };
+}
+
+export async function updateName(userId: string, name: string): Promise<AuthUserDto> {
+  const [firstName, ...rest] = name.split(/\s+/).filter(Boolean);
+  const lastName = rest.join(" ");
+
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $set: { firstName, lastName: lastName || undefined } },
+    { returnDocument: "after" }
+  ).exec();
+
+  if (!user) {
+    throw new AppError("Not authenticated", 401);
+  }
+
+  return toUserDto(user);
 }

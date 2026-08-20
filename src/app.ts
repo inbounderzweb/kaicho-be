@@ -6,6 +6,7 @@ import routes from "./routes";
 import adminRoutes from "./modules/admin/admin.routes";
 import { notFound, errorHandler } from "./common/middleware";
 import { env } from "./config/env";
+import { getMediaRoot } from "./modules/media/media.storage";
 
 const app: Application = express();
 
@@ -17,6 +18,7 @@ app.use(cookieParser());
 app.use(adminRoutes);
 
 app.use(express.static(path.resolve(__dirname, "../public")));
+app.use("/uploads/media", express.static(getMediaRoot()));
 
 app.use("/api", routes);
 

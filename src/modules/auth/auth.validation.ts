@@ -27,5 +27,14 @@ export const verifyOtpSchema = z.object({
     .regex(otpPattern, `Please enter the ${env.otpLength}-digit OTP`),
 });
 
+export const updateMeSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "Please enter your name")
+    .max(80, "Name is too long"),
+});
+
 export type SendOtpInput = z.infer<typeof sendOtpSchema>;
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
+export type UpdateMeInput = z.infer<typeof updateMeSchema>;

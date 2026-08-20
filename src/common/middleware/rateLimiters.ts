@@ -28,3 +28,25 @@ export const otpPhoneLimiter = rateLimit({
     message: "Too many requests for this phone number. Please try again later.",
   },
 });
+
+export const mediaUploadLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitMediaUploadMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many upload requests. Please try again later.",
+  },
+});
+
+export const mediaDeleteLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitMediaDeleteMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many delete requests. Please try again later.",
+  },
+});

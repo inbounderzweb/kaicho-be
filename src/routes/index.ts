@@ -2,11 +2,44 @@ import { Router } from "express";
 import healthRoutes from "../modules/health/health.routes";
 import versionRoutes from "../modules/version/version.routes";
 import authRoutes from "../modules/auth/auth.routes";
+import adminDashboardRoutes from "../modules/adminDashboard/adminDashboard.routes";
+import adminUsersRoutes from "../modules/adminDashboard/adminUsers.routes";
+import mediaRoutes from "../modules/media/media.routes";
+import categoryRoutes from "../modules/category/category.routes";
+import brandRoutes from "../modules/brand/brand.routes";
+import productRoutes from "../modules/product/product.routes";
+import productPublicRoutes from "../modules/product/productPublic.routes";
+import categoryPublicRoutes from "../modules/category/categoryPublic.routes";
+import brandPublicRoutes from "../modules/brand/brandPublic.routes";
+import wishlistRoutes from "../modules/wishlist/wishlist.routes";
 
 const router = Router();
 
 router.use("/health", healthRoutes);
 router.use("/version", versionRoutes);
 router.use("/auth", authRoutes);
+router.use("/admin/users", adminUsersRoutes);
+router.use("/admin/media", mediaRoutes);
+router.use("/admin/categories", categoryRoutes);
+router.use("/admin/brands", brandRoutes);
+// Mounted before adminDashboardRoutes (which still owns the generic
+// "/admin/*" prefix for the dashboard/orders dummy endpoints) so the real
+// product routes take precedence over anything adminDashboardRoutes might
+// also define at "/products" — see adminDashboard.routes.ts, which no
+// longer defines one, but the ordering is what makes that safe either way.
+router.use("/admin/products", productRoutes);
+router.use("/admin", adminDashboardRoutes);
+
+// Public, unauthenticated customer-facing catalog routes — separate DTOs
+// and route surface from the /admin/* CRUD routes above, sharing the same
+// underlying service layer (see product.service.ts's "Public catalog"
+// section). Spec §3/§48/§49.
+router.use("/products", productPublicRoutes);
+router.use("/categories", categoryPublicRoutes);
+router.use("/brands", brandPublicRoutes);
+// Requires requireAuth per-route (see wishlist.routes.ts) — a logged-in
+// user's own wishlist, not part of the unauthenticated catalog surface
+// above, but still a "/api/*" (not "/api/admin/*") customer-facing route.
+router.use("/wishlist", wishlistRoutes);
 
 export default router;

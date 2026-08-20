@@ -4,3 +4,4 @@ export * from "./requireAdminKey";
 export * from "./validateBody";
 export * from "./rateLimiters";
 export * from "./requireAuth";
+export * from "./requireRole";

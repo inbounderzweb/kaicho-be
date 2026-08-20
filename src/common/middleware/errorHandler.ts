@@ -19,6 +19,7 @@ export function errorHandler(
   res.status(statusCode).json({
     success: false,
     message,
+    ...(isAppError && err.details !== undefined ? { details: err.details } : {}),
     ...(env.nodeEnv === "development" && err instanceof Error
       ? { stack: err.stack }
       : {}),

@@ -1,4 +1,7 @@
 import { Schema, model, Document, Types } from "mongoose";
+import { ROLES, UserRole } from "../../common/constants/roles";
+
+export type { UserRole };
 
 export interface Address {
   _id?: Types.ObjectId;
@@ -21,6 +24,8 @@ export interface UserDocument extends Document {
   avatar?: string;
   addresses: Address[];
   wishlist: string[];
+  role: UserRole;
+  isActive: boolean;
   tokenVersion: number;
   lastLoginAt?: Date;
   createdAt: Date;
@@ -51,6 +56,8 @@ const UserSchema = new Schema<UserDocument>(
     avatar: { type: String },
     addresses: { type: [AddressSchema], default: [] },
     wishlist: { type: [String], default: [] },
+    role: { type: String, enum: ROLES, default: "user" },
+    isActive: { type: Boolean, default: true },
     tokenVersion: { type: Number, default: 0 },
     lastLoginAt: { type: Date },
   },

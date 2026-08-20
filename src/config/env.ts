@@ -44,4 +44,19 @@ export const env = {
 
   smsProvider: required("SMS_PROVIDER", "console"),
   defaultCountryCode: required("DEFAULT_COUNTRY_CODE", "+91"),
+
+  storageProvider: required("STORAGE_PROVIDER", "local"),
+  mediaBasePath: required("MEDIA_BASE_PATH", "uploads/media"),
+  maxImageFileSizeMb: requiredInt("MAX_IMAGE_FILE_SIZE_MB", 10),
+  maxPdfFileSizeMb: requiredInt("MAX_PDF_FILE_SIZE_MB", 20),
+  maxMediaFilesPerRequest: requiredInt("MAX_MEDIA_FILES_PER_REQUEST", 10),
+  maxImageWidth: requiredInt("MAX_IMAGE_WIDTH", 8000),
+  maxImageHeight: requiredInt("MAX_IMAGE_HEIGHT", 8000),
+  imageThumbnailWidth: requiredInt("IMAGE_THUMBNAIL_WIDTH", 300),
+  imageMediumWidth: requiredInt("IMAGE_MEDIUM_WIDTH", 800),
+  imageOptimizedWidth: requiredInt("IMAGE_OPTIMIZED_WIDTH", 1600),
+  mediaTemporaryTtlHours: requiredInt("MEDIA_TEMPORARY_TTL_HOURS", 24),
+
+  rateLimitMediaUploadMax: requiredInt("RATE_LIMIT_MEDIA_UPLOAD_MAX", 30),
+  rateLimitMediaDeleteMax: requiredInt("RATE_LIMIT_MEDIA_DELETE_MAX", 60),
 };
