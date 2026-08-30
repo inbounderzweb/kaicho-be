@@ -11,7 +11,18 @@ import { getMediaRoot } from "./modules/media/media.storage";
 const app: Application = express();
 
 app.use(cors({ origin: env.frontendOrigin, credentials: true }));
-app.use(express.json());
+// The raw request bytes are stashed on the request so the Razorpay webhook
+// can verify its HMAC against exactly what was sent — re-serializing the
+// parsed body would change key order/whitespace and break every signature.
+// `rawBody` is typed via a declare-global augmentation in the payment module
+// (payment.controller.ts), same pattern requireAuth.ts uses for `userId`.
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      (req as express.Request).rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 

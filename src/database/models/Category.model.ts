@@ -2,6 +2,7 @@ import { Schema, model, Document, Types } from "mongoose";
 
 export interface CategoryDocument extends Document {
   name: string;
+  collectionName?: string;
   slug: string;
   description?: string;
   parentId?: Types.ObjectId;
@@ -15,6 +16,7 @@ export interface CategoryDocument extends Document {
 const CategorySchema = new Schema<CategoryDocument>(
   {
     name: { type: String, required: true, trim: true, maxlength: 120 },
+    collectionName: { type: String, trim: true, maxlength: 160 },
     slug: { type: String, required: true, trim: true, unique: true, maxlength: 140 },
     description: { type: String, trim: true, maxlength: 2000 },
     parentId: { type: Schema.Types.ObjectId, ref: "Category" },

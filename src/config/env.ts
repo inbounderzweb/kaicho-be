@@ -38,6 +38,11 @@ export const env = {
   otpExpiryMinutes: requiredInt("OTP_EXPIRY_MINUTES", 5),
   otpMaxAttempts: requiredInt("OTP_MAX_ATTEMPTS", 5),
   otpResendCooldownSeconds: requiredInt("OTP_RESEND_COOLDOWN_SECONDS", 45),
+  // Lets local/dev testing log in without reading the real OTP out of the
+  // console SMS provider's stdout. Only ever honored when nodeEnv is
+  // "development" (see auth.service.ts's verifyOtp) — never reachable in a
+  // deployed environment regardless of what this is set to.
+  devOtpBypassCode: required("DEV_OTP_BYPASS_CODE", "0000"),
 
   rateLimitWindowMinutes: requiredInt("RATE_LIMIT_WINDOW_MINUTES", 10),
   rateLimitOtpMax: requiredInt("RATE_LIMIT_OTP_MAX", 10),
@@ -59,4 +64,16 @@ export const env = {
 
   rateLimitMediaUploadMax: requiredInt("RATE_LIMIT_MEDIA_UPLOAD_MAX", 30),
   rateLimitMediaDeleteMax: requiredInt("RATE_LIMIT_MEDIA_DELETE_MAX", 60),
+
+  // Razorpay credentials. The empty-string fallbacks keep the app bootable
+  // in development/tests without a gateway account (same dev-safe treatment
+  // as jwtSecret/adminKey's placeholder values) — but any environment that
+  // accepts real payments MUST set real values: with an empty secret every
+  // HMAC signature check fails closed, so /payments/razorpay/verify and the
+  // webhook will reject everything rather than accept anything.
+  razorpayKeyId: required("RAZORPAY_KEY_ID", ""),
+  razorpayKeySecret: required("RAZORPAY_KEY_SECRET", ""),
+  razorpayWebhookSecret: required("RAZORPAY_WEBHOOK_SECRET", ""),
+
+  rateLimitCheckoutMax: requiredInt("RATE_LIMIT_CHECKOUT_MAX", 20),
 };

@@ -42,7 +42,16 @@ function toImageInfo(media: MediaDocument | null | undefined): CategoryImageInfo
 
 type LeanCategory = Pick<
   CategoryDocument,
-  "name" | "slug" | "description" | "parentId" | "imageMediaId" | "isActive" | "sortOrder" | "createdAt" | "updatedAt"
+  | "name"
+  | "collectionName"
+  | "slug"
+  | "description"
+  | "parentId"
+  | "imageMediaId"
+  | "isActive"
+  | "sortOrder"
+  | "createdAt"
+  | "updatedAt"
 > & { _id: mongoose.Types.ObjectId };
 
 function toListItem(
@@ -53,6 +62,7 @@ function toListItem(
   return {
     categoryId: doc._id.toString(),
     name: doc.name,
+    collectionName: doc.collectionName ?? null,
     slug: doc.slug,
     description: doc.description ?? null,
     image: toImageInfo(media),
@@ -134,6 +144,7 @@ export async function createCategory(input: CreateCategoryInput) {
 
   const doc = await Category.create({
     name: input.name,
+    collectionName: input.collectionName?.trim() || undefined,
     slug,
     description: input.description,
     parentId: input.parentId || undefined,
@@ -166,6 +177,7 @@ export async function updateCategoryById(id: string, patch: UpdateCategoryInput)
   if (!doc) return null;
 
   if (patch.name !== undefined) doc.name = patch.name;
+  if (patch.collectionName !== undefined) doc.collectionName = patch.collectionName.trim() || undefined;
   if (patch.description !== undefined) doc.description = patch.description;
   if (patch.isActive !== undefined) doc.isActive = patch.isActive;
   if (patch.sortOrder !== undefined) doc.sortOrder = patch.sortOrder;
@@ -355,7 +367,7 @@ export async function getCategoryById(id: string) {
 
 export async function getPublicCategoryList() {
   const docs = await Category.find({ isActive: true })
-    .select("name slug description imageMediaId")
+    .select("name collectionName slug description imageMediaId")
     .sort({ sortOrder: 1, name: 1 })
     .lean();
 
@@ -366,6 +378,7 @@ export async function getPublicCategoryList() {
   return docs.map((d) => ({
     categoryId: d._id.toString(),
     name: d.name,
+    collectionName: d.collectionName ?? null,
     slug: d.slug,
     description: d.description ?? null,
     image: toImageInfo(d.imageMediaId ? mediaMap.get(d.imageMediaId.toString()) : undefined),
@@ -380,6 +393,7 @@ export async function getPublicCategoryBySlug(slug: string) {
   return {
     categoryId: doc._id.toString(),
     name: doc.name,
+    collectionName: doc.collectionName ?? null,
     slug: doc.slug,
     description: doc.description ?? null,
     image: toImageInfo(media),

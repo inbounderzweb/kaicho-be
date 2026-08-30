@@ -10,6 +10,7 @@ const objectIdField = z
 // (see slugify.ts), never trusted raw.
 export const createCategorySchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(120, "Name is too long"),
+  collectionName: z.string().trim().max(160, "Collection name is too long").optional(),
   slug: z.string().trim().max(140).optional(),
   description: z.string().trim().max(2000).optional(),
   parentId: objectIdField.nullable().optional(),
@@ -26,6 +27,7 @@ export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
 export const updateCategorySchema = z
   .object({
     name: z.string().trim().min(1, "Name is required").max(120, "Name is too long").optional(),
+    collectionName: z.string().trim().max(160, "Collection name is too long").optional(),
     slug: z.string().trim().max(140).optional(),
     description: z.string().trim().max(2000).optional(),
     parentId: objectIdField.nullable().optional(),

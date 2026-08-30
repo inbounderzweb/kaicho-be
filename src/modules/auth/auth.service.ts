@@ -124,7 +124,12 @@ export async function verifyOtp(
     throw new AppError("Too many incorrect attempts. Please request a new OTP.", 400);
   }
 
-  const isMatch = await compareOtp(otp, record.otpHash);
+  // Dev-only escape hatch: the console SMS provider prints the real OTP to
+  // this process's own stdout, not somewhere a browser-driving tool or a
+  // second person can read. Gated on nodeEnv so it's structurally inert
+  // outside development, regardless of what DEV_OTP_BYPASS_CODE is set to.
+  const isDevBypass = env.nodeEnv === "development" && otp === env.devOtpBypassCode;
+  const isMatch = isDevBypass || (await compareOtp(otp, record.otpHash));
 
   if (!isMatch) {
     record.attempts += 1;

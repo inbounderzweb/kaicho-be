@@ -155,6 +155,29 @@ function toImageInfo(media: MediaDocument): ProductImageInfo {
   };
 }
 
+// Batch primary-image lookup for callers that only need a single URL per
+// product and can't use the richer DTOs above — currently checkout, which
+// SNAPSHOTS the URL onto each order line item (see Order.model.ts). Same
+// { entityType: "PRODUCT", isPrimary: true } query and same optimized-variant
+// URL derivation as hydratePublicListItems/toImageInfo, kept here so image
+// resolution stays in one module rather than being re-derived per feature.
+export async function getPrimaryImageUrlMap(
+  productIds: (string | mongoose.Types.ObjectId)[]
+): Promise<Map<string, string>> {
+  if (!productIds.length) return new Map();
+  const images = await Media.find({
+    entityType: "PRODUCT",
+    entityId: { $in: productIds },
+    isPrimary: true,
+  }).exec();
+  return new Map(
+    images.map((m) => [
+      m.entityId!.toString(),
+      storage.getUrl(m.variants ? m.variants.optimized.key : m.storageKey),
+    ])
+  );
+}
+
 // ---- Activation guard ----
 // Spec §33/§39: a product must never become ACTIVE while missing or invalid
 // required data, even though the create schema already forces every
