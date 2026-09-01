@@ -6,3 +6,6 @@ export * from "./Brand.model";
 export * from "./Product.model";
 export * from "./Collection.model";
 export * from "./Order.model";
+export * from "./Blog.model";
+export * from "./BlogCategory.model";
+export * from "./BlogTag.model";

@@ -19,6 +19,10 @@ import checkoutRoutes from "../modules/checkout/checkout.routes";
 import orderRoutes from "../modules/order/order.routes";
 import adminOrderRoutes from "../modules/order/adminOrder.routes";
 import paymentRoutes from "../modules/payment/payment.routes";
+import adminBlogRoutes from "../modules/blog/blog.routes";
+import adminBlogCategoryRoutes from "../modules/blog/blogCategory.routes";
+import adminBlogTagRoutes from "../modules/blog/blogTag.routes";
+import blogPublicRoutes from "../modules/blog/blogPublic.routes";
 
 const router = Router();
 
@@ -40,6 +44,11 @@ router.use("/admin/products", productRoutes);
 // defines a generic "/orders" of its own, so the real order routes must be
 // mounted first to win the match.
 router.use("/admin/orders", adminOrderRoutes);
+// Same ordering rule as /admin/products and /admin/orders above — mounted
+// before the generic "/admin" dashboard router so these win the match.
+router.use("/admin/blogs", adminBlogRoutes);
+router.use("/admin/blog-categories", adminBlogCategoryRoutes);
+router.use("/admin/blog-tags", adminBlogTagRoutes);
 router.use("/admin", adminDashboardRoutes);
 
 // Public, unauthenticated customer-facing catalog routes — separate DTOs
@@ -50,6 +59,7 @@ router.use("/products", productPublicRoutes);
 router.use("/categories", categoryPublicRoutes);
 router.use("/collections", collectionPublicRoutes);
 router.use("/brands", brandPublicRoutes);
+router.use("/blogs", blogPublicRoutes);
 // Requires requireAuth per-route (see wishlist.routes.ts) — a logged-in
 // user's own wishlist, not part of the unauthenticated catalog surface
 // above, but still a "/api/*" (not "/api/admin/*") customer-facing route.

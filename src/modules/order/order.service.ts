@@ -393,6 +393,9 @@ export async function updateOrderStatusAdmin(
 // ---- Dashboard aggregates ----
 
 const TREND_DAYS = 14;
+const RECENT_WINDOW_DAYS = 30;
+// Orders sitting in a state that needs an admin to act (paid, not yet shipped).
+const PENDING_FULFILMENT_STATUSES: OrderStatus[] = ["CONFIRMED", "PROCESSING"];
 
 // Cancelled orders are excluded from revenue/order counts everywhere — they
 // were never money. Refunded ones are NOT excluded here: they were real
@@ -400,21 +403,44 @@ const TREND_DAYS = 14;
 // reversal is tracked.
 const REVENUE_STATUS_FILTER = { status: { $ne: "CANCELLED" } };
 
+export interface DashboardTopProduct {
+  productId: string;
+  name: string;
+  unitsSold: number;
+  revenue: number;
+}
+
+export interface DashboardStatusCount {
+  status: OrderStatus;
+  count: number;
+}
+
+// Everything the dashboard needs from the Order collection, in one round of
+// parallel aggregations — the admin dashboard is a single endpoint, so this
+// is a single call from the controller (see adminDashboard.controller.ts).
 export async function getDashboardOrderStats() {
   // UTC day boundaries throughout — $dateToString below buckets in UTC by
   // default, so the JS-side day keys must be built the same way or the two
   // would disagree by a day for part of every day.
-  const since = new Date();
-  since.setUTCHours(0, 0, 0, 0);
-  since.setUTCDate(since.getUTCDate() - (TREND_DAYS - 1));
+  const trendSince = new Date();
+  trendSince.setUTCHours(0, 0, 0, 0);
+  trendSince.setUTCDate(trendSince.getUTCDate() - (TREND_DAYS - 1));
 
-  const [totals, trendRows, recentDocs] = await Promise.all([
+  const recentSince = new Date();
+  recentSince.setUTCHours(0, 0, 0, 0);
+  recentSince.setUTCDate(recentSince.getUTCDate() - (RECENT_WINDOW_DAYS - 1));
+
+  const [totals, windowTotals, trendRows, recentDocs, statusRows, topProductRows] = await Promise.all([
     Order.aggregate<{ _id: null; totalRevenue: number; totalOrders: number }>([
       { $match: REVENUE_STATUS_FILTER },
       { $group: { _id: null, totalRevenue: { $sum: "$pricing.grandTotal" }, totalOrders: { $sum: 1 } } },
     ]),
+    Order.aggregate<{ _id: null; revenue: number; orders: number }>([
+      { $match: { ...REVENUE_STATUS_FILTER, createdAt: { $gte: recentSince } } },
+      { $group: { _id: null, revenue: { $sum: "$pricing.grandTotal" }, orders: { $sum: 1 } } },
+    ]),
     Order.aggregate<{ _id: string; revenue: number; orders: number }>([
-      { $match: { ...REVENUE_STATUS_FILTER, createdAt: { $gte: since } } },
+      { $match: { ...REVENUE_STATUS_FILTER, createdAt: { $gte: trendSince } } },
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
@@ -428,6 +454,22 @@ export async function getDashboardOrderStats() {
       .limit(5)
       .populate("userId", "firstName lastName phone")
       .exec(),
+    Order.aggregate<{ _id: OrderStatus; count: number }>([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
+    Order.aggregate<DashboardTopProduct & { _id: unknown }>([
+      { $match: { ...REVENUE_STATUS_FILTER, createdAt: { $gte: recentSince } } },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: "$items.productId",
+          name: { $first: "$items.name" },
+          unitsSold: { $sum: "$items.quantity" },
+          revenue: { $sum: "$items.lineTotal" },
+        },
+      },
+      { $sort: { unitsSold: -1, revenue: -1 } },
+      { $limit: 5 },
+      { $project: { _id: 0, productId: { $toString: "$_id" }, name: 1, unitsSold: 1, revenue: 1 } },
+    ]),
   ]);
 
   const byDate = new Map(trendRows.map((row) => [row._id, row]));
@@ -435,19 +477,38 @@ export async function getDashboardOrderStats() {
   // the chart needs a continuous x-axis, and $group only returns days that
   // actually have documents.
   const trend = Array.from({ length: TREND_DAYS }).map((_, i) => {
-    const date = new Date(since);
-    date.setUTCDate(since.getUTCDate() + i);
+    const date = new Date(trendSince);
+    date.setUTCDate(trendSince.getUTCDate() + i);
     const key = date.toISOString().slice(0, 10);
     const row = byDate.get(key);
     return { date: key, revenue: row?.revenue ?? 0, orders: row?.orders ?? 0 };
   });
 
+  const totalRevenue = totals[0]?.totalRevenue ?? 0;
+  const totalOrders = totals[0]?.totalOrders ?? 0;
+  const pendingOrders = statusRows
+    .filter((r) => PENDING_FULFILMENT_STATUSES.includes(r._id))
+    .reduce((sum, r) => sum + r.count, 0);
+
   return {
     stats: {
-      totalRevenue: totals[0]?.totalRevenue ?? 0,
-      totalOrders: totals[0]?.totalOrders ?? 0,
+      totalRevenue,
+      totalOrders,
+      revenue30d: windowTotals[0]?.revenue ?? 0,
+      orders30d: windowTotals[0]?.orders ?? 0,
+      averageOrderValue: totalOrders > 0 ? Math.round((totalRevenue / totalOrders) * 100) / 100 : 0,
+      pendingOrders,
     },
     trend,
     recentOrders: recentDocs.map(toAdminOrderListItem),
+    ordersByStatus: statusRows
+      .map<DashboardStatusCount>((r) => ({ status: r._id, count: r.count }))
+      .sort((a, b) => b.count - a.count),
+    topProducts: topProductRows.map<DashboardTopProduct>((r) => ({
+      productId: r.productId,
+      name: r.name,
+      unitsSold: r.unitsSold,
+      revenue: r.revenue,
+    })),
   };
 }

@@ -170,6 +170,13 @@ export async function countAllUsers(): Promise<number> {
   return User.countDocuments();
 }
 
+// Site-wide new-signup count since `since` — the dashboard's growth signal.
+// Not scoped to exclude the requesting admin (unlike getUsersStats): the
+// dashboard reports the whole store, not the users-management view.
+export async function countUsersSince(since: Date): Promise<number> {
+  return User.countDocuments({ createdAt: { $gte: since } });
+}
+
 export async function getUserById(id: string, excludeUserId: string) {
   // Malformed id, not-found, and "that id is yourself" all return the same
   // null → the controller turns this into a single generic 404, matching

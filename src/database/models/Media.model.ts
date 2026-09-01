@@ -15,6 +15,7 @@ export const MEDIA_ENTITY_TYPES = [
   "USER",
   "REVIEW",
   "BLOG",
+  "BLOG_CATEGORY",
 ] as const;
 export type MediaEntityType = (typeof MEDIA_ENTITY_TYPES)[number];
 

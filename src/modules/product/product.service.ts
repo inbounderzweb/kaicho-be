@@ -692,6 +692,15 @@ export async function countAllProducts(): Promise<number> {
   return Product.countDocuments();
 }
 
+// Products whose tracked stock has fallen to or below their own low-stock
+// threshold — the dashboard's "needs restocking" signal.
+export async function countLowStockProducts(): Promise<number> {
+  return Product.countDocuments({
+    "inventory.trackInventory": true,
+    $expr: { $lte: ["$inventory.stockQuantity", "$inventory.lowStockThreshold"] },
+  });
+}
+
 // ============================================================================
 // ---- Public catalog (customer-facing) ----
 // Same Product model + collection as the admin functions above (per spec:
