@@ -29,6 +29,21 @@ export const otpPhoneLimiter = rateLimit({
   },
 });
 
+// Public lead-capture forms (contact, bulk order). Per-IP — an anonymous
+// visitor has no identity to key on — and deliberately generous so a genuine
+// user correcting a typo and resubmitting isn't blocked, while a script
+// hammering the endpoint is.
+export const inquirySubmitLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitInquiryMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many submissions from this device. Please try again later.",
+  },
+});
+
 export const mediaUploadLimiter = rateLimit({
   windowMs,
   max: env.rateLimitMediaUploadMax,

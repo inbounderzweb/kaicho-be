@@ -9,3 +9,6 @@ export * from "./Order.model";
 export * from "./Blog.model";
 export * from "./BlogCategory.model";
 export * from "./BlogTag.model";
+export * from "./Inquiry.model";
+export * from "./InquiryNote.model";
+export * from "./InquiryActivity.model";

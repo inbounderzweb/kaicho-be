@@ -55,6 +55,8 @@ export const env = {
 
   rateLimitWindowMinutes: requiredInt("RATE_LIMIT_WINDOW_MINUTES", 10),
   rateLimitOtpMax: requiredInt("RATE_LIMIT_OTP_MAX", 10),
+  // Public inquiry-form submissions, per IP, per RATE_LIMIT_WINDOW_MINUTES.
+  rateLimitInquiryMax: requiredInt("RATE_LIMIT_INQUIRY_MAX", 10),
 
   smsProvider: required("SMS_PROVIDER", "console"),
   defaultCountryCode: required("DEFAULT_COUNTRY_CODE", "+91"),

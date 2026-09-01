@@ -23,6 +23,8 @@ import adminBlogRoutes from "../modules/blog/blog.routes";
 import adminBlogCategoryRoutes from "../modules/blog/blogCategory.routes";
 import adminBlogTagRoutes from "../modules/blog/blogTag.routes";
 import blogPublicRoutes from "../modules/blog/blogPublic.routes";
+import adminInquiryRoutes from "../modules/inquiry/inquiry.routes";
+import inquiryPublicRoutes from "../modules/inquiry/inquiryPublic.routes";
 
 const router = Router();
 
@@ -49,6 +51,7 @@ router.use("/admin/orders", adminOrderRoutes);
 router.use("/admin/blogs", adminBlogRoutes);
 router.use("/admin/blog-categories", adminBlogCategoryRoutes);
 router.use("/admin/blog-tags", adminBlogTagRoutes);
+router.use("/admin/inquiries", adminInquiryRoutes);
 router.use("/admin", adminDashboardRoutes);
 
 // Public, unauthenticated customer-facing catalog routes — separate DTOs
@@ -60,6 +63,7 @@ router.use("/categories", categoryPublicRoutes);
 router.use("/collections", collectionPublicRoutes);
 router.use("/brands", brandPublicRoutes);
 router.use("/blogs", blogPublicRoutes);
+router.use("/inquiries", inquiryPublicRoutes);
 // Requires requireAuth per-route (see wishlist.routes.ts) — a logged-in
 // user's own wishlist, not part of the unauthenticated catalog surface
 // above, but still a "/api/*" (not "/api/admin/*") customer-facing route.
