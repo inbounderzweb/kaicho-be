@@ -10,7 +10,22 @@ import { getMediaRoot } from "./modules/media/media.storage";
 
 const app: Application = express();
 
-app.use(cors({ origin: env.frontendOrigin, credentials: true }));
+// Reflect the request's Origin back only when it's on the allow-list. A
+// missing Origin (curl, server-to-server, same-origin) is allowed through so
+// non-browser callers still work. Anything else is rejected without throwing,
+// so the request simply completes without CORS headers.
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || env.frontendOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    credentials: true,
+  })
+);
 // The raw request bytes are stashed on the request so the Razorpay webhook
 // can verify its HMAC against exactly what was sent — re-serializing the
 // parsed body would change key order/whitespace and break every signature.

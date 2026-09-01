@@ -124,6 +124,28 @@ export function toOrderDto(doc: OrderDocument) {
       at: entry.at.toISOString(),
       note: entry.note,
     })),
+    // Logistics detail — null until an admin creates a shipment. Everything
+    // here is safe for the customer to see (it's their parcel); the same DTO
+    // feeds the admin order pages, which need nothing extra.
+    shipment: doc.shipment
+      ? {
+          carrier: doc.shipment.carrier,
+          trackingNumber: doc.shipment.trackingNumber,
+          shipmentId: doc.shipment.shipmentId ?? null,
+          status: doc.shipment.status,
+          shippedAt: doc.shipment.shippedAt ? doc.shipment.shippedAt.toISOString() : null,
+          estimatedDeliveryAt: doc.shipment.estimatedDeliveryAt
+            ? doc.shipment.estimatedDeliveryAt.toISOString()
+            : null,
+          deliveredAt: doc.shipment.deliveredAt ? doc.shipment.deliveredAt.toISOString() : null,
+          trackingUrl: doc.shipment.trackingUrl ?? null,
+          history: doc.shipment.history.map((entry) => ({
+            status: entry.status,
+            at: entry.at.toISOString(),
+            note: entry.note,
+          })),
+        }
+      : null,
     cancelReason: doc.cancelReason,
     // What the customer UI needs to decide whether to render a Cancel button
     // — derived from the same transition table the endpoint enforces, so the

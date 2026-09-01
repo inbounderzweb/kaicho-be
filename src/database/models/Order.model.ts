@@ -39,6 +39,38 @@ export const ORDER_PAYMENT_STATUSES = [
 ] as const;
 export type OrderPaymentStatus = (typeof ORDER_PAYMENT_STATUSES)[number];
 
+// Shipment status is deliberately *subordinate* to `status` above: it carries
+// finer-grained logistics detail (Packed / In transit / Failed delivery have
+// no equivalent order state) and the admin can correct it freely, so it has
+// no transition table of its own. Moving it forward auto-advances `status`
+// along the fulfilment happy path (see shipment.service.ts) — the order
+// lifecycle stays the single source of truth for anything money/stock-related.
+export const SHIPMENT_STATUSES = [
+  "ORDER_CONFIRMED",
+  "PROCESSING",
+  "PACKED",
+  "SHIPPED",
+  "IN_TRANSIT",
+  "OUT_FOR_DELIVERY",
+  "DELIVERED",
+  "CANCELLED",
+  "FAILED_DELIVERY",
+] as const;
+export type ShipmentStatus = (typeof SHIPMENT_STATUSES)[number];
+
+// The ordered happy-path steps the customer's visual timeline renders. The two
+// exception states (CANCELLED, FAILED_DELIVERY) are intentionally absent — the
+// UI shows a callout for those rather than a step.
+export const SHIPMENT_TIMELINE_STEPS: ShipmentStatus[] = [
+  "ORDER_CONFIRMED",
+  "PROCESSING",
+  "PACKED",
+  "SHIPPED",
+  "IN_TRANSIT",
+  "OUT_FOR_DELIVERY",
+  "DELIVERED",
+];
+
 // The single source of truth for what status change is legal, shared by the
 // customer cancel endpoint, the admin status-update endpoint, and the stale
 // pending-order cleanup job — an explicit table rather than ad-hoc if/else
@@ -113,6 +145,34 @@ export interface OrderStatusHistoryEntry {
   actor?: Types.ObjectId;
 }
 
+export interface OrderShipmentHistoryEntry {
+  status: ShipmentStatus;
+  at: Date;
+  note?: string;
+}
+
+export interface OrderShipment {
+  // Delivery partner / courier name and the AWB (airway bill) tracking number
+  // the customer would quote to the courier. Both are required for a shipment
+  // to exist at all.
+  carrier: string;
+  trackingNumber: string;
+  // The aggregator's own shipment id (Shiprocket etc.) — distinct from the
+  // AWB, and absent for a manually-entered shipment.
+  shipmentId?: string;
+  status: ShipmentStatus;
+  shippedAt?: Date;
+  estimatedDeliveryAt?: Date;
+  deliveredAt?: Date;
+  trackingUrl?: string;
+  // Which system created/owns this shipment. "manual" for admin-entered; a
+  // future courier-aggregator integration sets its own name here without any
+  // other schema change.
+  provider: string;
+  history: OrderShipmentHistoryEntry[];
+  notes?: string;
+}
+
 export interface OrderDocument extends Document {
   orderNumber: string;
   userId: Types.ObjectId;
@@ -123,6 +183,7 @@ export interface OrderDocument extends Document {
   paymentMethod: OrderPaymentMethod;
   paymentStatus: OrderPaymentStatus;
   payment?: OrderPayment;
+  shipment?: OrderShipment;
   idempotencyKey?: string;
   statusHistory: OrderStatusHistoryEntry[];
   cancelReason?: string;
@@ -192,6 +253,35 @@ const OrderStatusHistorySchema = new Schema<OrderStatusHistoryEntry>(
   { _id: false }
 );
 
+const OrderShipmentHistorySchema = new Schema<OrderShipmentHistoryEntry>(
+  {
+    status: { type: String, enum: SHIPMENT_STATUSES, required: true },
+    at: { type: Date, required: true, default: Date.now },
+    note: { type: String },
+  },
+  { _id: false }
+);
+
+// `default: undefined` for the same reason OrderPaymentSchema uses it — an
+// order has no shipment until an admin creates one, and auto-vivifying `{}`
+// would make `order.shipment ? ... : ...` checks meaningless.
+const OrderShipmentSchema = new Schema<OrderShipment>(
+  {
+    carrier: { type: String, required: true, trim: true },
+    trackingNumber: { type: String, required: true, trim: true },
+    shipmentId: { type: String, trim: true },
+    status: { type: String, enum: SHIPMENT_STATUSES, required: true },
+    shippedAt: { type: Date },
+    estimatedDeliveryAt: { type: Date },
+    deliveredAt: { type: Date },
+    trackingUrl: { type: String, trim: true },
+    provider: { type: String, required: true, default: "manual" },
+    history: { type: [OrderShipmentHistorySchema], default: [] },
+    notes: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
 const OrderSchema = new Schema<OrderDocument>(
   {
     orderNumber: { type: String, required: true, unique: true, trim: true },
@@ -214,6 +304,7 @@ const OrderSchema = new Schema<OrderDocument>(
     paymentStatus: { type: String, enum: ORDER_PAYMENT_STATUSES, default: "PENDING" },
 
     payment: { type: OrderPaymentSchema, default: undefined },
+    shipment: { type: OrderShipmentSchema, default: undefined },
 
     // Sparse so orders created by any future non-checkout path (admin
     // manual entry, imports) without a key don't collide on `null`.
@@ -232,5 +323,8 @@ OrderSchema.index({ createdAt: -1 });
 // Webhook lookups arrive keyed only by Razorpay's own ids.
 OrderSchema.index({ "payment.razorpayOrderId": 1 });
 OrderSchema.index({ "payment.razorpayPaymentId": 1 });
+// Support "find the order for this AWB" (customer-support lookups, and a
+// future courier webhook that only carries the tracking number).
+OrderSchema.index({ "shipment.trackingNumber": 1 });
 
 export const Order = model<OrderDocument>("Order", OrderSchema);

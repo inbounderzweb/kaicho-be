@@ -3,7 +3,13 @@ import { asyncHandler } from "../../common/utils/asyncHandler";
 import { parsePagination } from "../adminDashboard/pagination";
 import { listOrdersAdmin, getOrderAdmin, updateOrderStatusAdmin } from "./order.service";
 import { refundOrder } from "./adminOrder.service";
-import type { UpdateOrderStatusInput, RefundOrderInput } from "./order.validation";
+import { saveShipment, updateShipmentStatus } from "./shipment.service";
+import type {
+  UpdateOrderStatusInput,
+  RefundOrderInput,
+  SaveShipmentInput,
+  UpdateShipmentStatusInput,
+} from "./order.validation";
 
 export const listAdminOrdersHandler = asyncHandler(async (req: Request, res: Response) => {
   const { page, pageSize } = parsePagination(req);
@@ -33,3 +39,16 @@ export const refundAdminOrderHandler = asyncHandler(async (req: Request, res: Re
   const order = await refundOrder(String(req.params.id), amount);
   res.status(200).json({ success: true, message: "Refund processed", data: { order } });
 });
+
+export const saveAdminOrderShipmentHandler = asyncHandler(async (req: Request, res: Response) => {
+  const order = await saveShipment(String(req.params.id), req.userId, req.body as SaveShipmentInput);
+  res.status(200).json({ success: true, message: "Shipping details saved", data: { order } });
+});
+
+export const updateAdminOrderShipmentStatusHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { status, note } = req.body as UpdateShipmentStatusInput;
+    const order = await updateShipmentStatus(String(req.params.id), req.userId, status, note);
+    res.status(200).json({ success: true, message: "Shipping status updated", data: { order } });
+  }
+);

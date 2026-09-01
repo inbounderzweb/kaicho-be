@@ -32,7 +32,16 @@ export const env = {
     ? process.env.COOKIE_SECURE === "true"
     : required("NODE_ENV", "development") === "production",
 
-  frontendOrigin: required("FRONTEND_ORIGIN", "http://localhost:3000"),
+  // Allowed browser origins for CORS. Accepts a comma-separated list so more
+  // than one frontend (local dev, a devtunnel, staging, prod) can talk to this
+  // API at once. Each entry is trimmed and any trailing "/" is stripped, since
+  // the browser's Origin header never carries a path or trailing slash — a
+  // stored "https://foo.dev/" would otherwise never match and every request
+  // from that origin would fail CORS.
+  frontendOrigins: required("FRONTEND_ORIGIN", "http://localhost:3000")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter((origin) => origin.length > 0),
 
   otpLength: requiredInt("OTP_LENGTH", 4),
   otpExpiryMinutes: requiredInt("OTP_EXPIRY_MINUTES", 5),
@@ -76,4 +85,11 @@ export const env = {
   razorpayWebhookSecret: required("RAZORPAY_WEBHOOK_SECRET", ""),
 
   rateLimitCheckoutMax: requiredInt("RATE_LIMIT_CHECKOUT_MAX", 20),
+
+  // Courier aggregator (Shiprocket etc.). Empty by default — shipments are
+  // entered manually today (Order.shipment.provider === "manual"). When a
+  // client is added it lives behind shipment.service.ts's saveShipment(), the
+  // same seam refunds use for Razorpay; nothing else needs to change here.
+  shiprocketEmail: required("SHIPROCKET_EMAIL", ""),
+  shiprocketPassword: required("SHIPROCKET_PASSWORD", ""),
 };
