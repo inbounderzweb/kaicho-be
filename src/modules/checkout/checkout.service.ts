@@ -5,20 +5,36 @@ import { computeDiscount, getPrimaryImageUrlMap } from "../product/product.servi
 import { getAddressOrThrow } from "../address/address.service";
 import { createOrderWithUniqueNumber, toOrderDto } from "../order/order.service";
 import { createRazorpayOrder } from "../../common/payments/razorpay";
+import { getShippingPolicy } from "../settings/settings.service";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
 
-// Matches the FREE_SHIPPING_THRESHOLD already advertised on the cart page.
-// Both live here (not in env) because they're merchandising policy the
-// frontend also hardcodes today — moving them to config is a separate change
-// that would need the frontend to read them from an endpoint.
+// The shipping policy is now admin-configurable — the live values come from
+// the StoreSettings document (getShippingPolicy()), read once per
+// preview/checkout below. These two constants remain as the seed defaults
+// (kept in sync with STORE_SETTINGS_DEFAULTS) and the fallback
+// computeOrderTotals() uses when no policy is passed — which is how the unit
+// tests still call it directly.
 export const FREE_SHIPPING_THRESHOLD = 499;
 export const FLAT_SHIPPING_FEE = 49;
+
+export interface ShippingPolicy {
+  freeShippingThreshold: number;
+  flatShippingFee: number;
+}
+
+const DEFAULT_SHIPPING_POLICY: ShippingPolicy = {
+  freeShippingThreshold: FREE_SHIPPING_THRESHOLD,
+  flatShippingFee: FLAT_SHIPPING_FEE,
+};
 
 // The ONE place order money is totalled, for both preview and real checkout.
 // taxTotal is 0 today: sellingPrice is treated as tax-inclusive (typical for
 // Indian D2C listings) and no tax engine is configured — when GST breakout is
 // needed it grows here and every caller inherits it for free.
-export function computeOrderTotals(lineTotals: number[]): {
+export function computeOrderTotals(
+  lineTotals: number[],
+  policy: ShippingPolicy = DEFAULT_SHIPPING_POLICY
+): {
   subtotal: number;
   shippingFee: number;
   taxTotal: number;
@@ -29,7 +45,7 @@ export function computeOrderTotals(lineTotals: number[]): {
   // fractional-rupee lines can't drift a paisa per line.
   const subtotalMinor = lineTotals.reduce((sum, value) => sum + Math.round(value * 100), 0);
   const subtotal = subtotalMinor / 100;
-  const shippingFee = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : FLAT_SHIPPING_FEE;
+  const shippingFee = subtotal >= policy.freeShippingThreshold ? 0 : policy.flatShippingFee;
   const taxTotal = 0;
   const grandTotal = (subtotalMinor + Math.round(shippingFee * 100) + Math.round(taxTotal * 100)) / 100;
   return { subtotal, shippingFee, taxTotal, grandTotal };
@@ -70,6 +86,7 @@ async function loadProducts(items: RequestedLine[]): Promise<Map<string, PricedP
 export async function previewCheckout(input: CheckoutPreviewInput) {
   const products = await loadProducts(input.items);
   const imageUrls = await getPrimaryImageUrlMap(input.items.map((i) => i.productId));
+  const shippingPolicy = await getShippingPolicy();
 
   const items = input.items.map((line) => {
     const product = products.get(line.productId);
@@ -123,7 +140,7 @@ export async function previewCheckout(input: CheckoutPreviewInput) {
   // includes something the customer can't actually buy would be worse than
   // showing a smaller one next to the warning.
   const payable = items.filter((i) => !i.unavailable && !i.insufficientStock);
-  const pricing = computeOrderTotals(payable.map((i) => i.lineTotal));
+  const pricing = computeOrderTotals(payable.map((i) => i.lineTotal), shippingPolicy);
 
   return {
     items,
@@ -189,6 +206,7 @@ export async function createCheckout(
 
   const products = await loadProducts(input.items);
   const imageUrls = await getPrimaryImageUrlMap(input.items.map((i) => i.productId));
+  const shippingPolicy = await getShippingPolicy();
 
   const reserved: ReservedLine[] = [];
   const orderItems: OrderItem[] = [];
@@ -236,7 +254,7 @@ export async function createCheckout(
       });
     }
 
-    const pricing = computeOrderTotals(orderItems.map((i) => i.lineTotal));
+    const pricing = computeOrderTotals(orderItems.map((i) => i.lineTotal), shippingPolicy);
     const status = input.paymentMethod === "COD" ? "CONFIRMED" : "PENDING_PAYMENT";
 
     let order: OrderDocument;

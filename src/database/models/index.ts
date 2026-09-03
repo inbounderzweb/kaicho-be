@@ -12,3 +12,4 @@ export * from "./BlogTag.model";
 export * from "./Inquiry.model";
 export * from "./InquiryNote.model";
 export * from "./InquiryActivity.model";
+export * from "./StoreSettings.model";
