@@ -4,7 +4,21 @@ import { PDFParse } from "pdf-parse";
 import mongoose from "mongoose";
 import { env } from "../../config/env";
 import { AppError } from "../../common/errors";
-import { Media, MediaDocument, MediaEntityType, MediaStatus, MediaType } from "../../database/models";
+import {
+  Media,
+  MediaDocument,
+  MediaEntityType,
+  MediaStatus,
+  MediaType,
+  MediaUsage,
+  MediaUsageField,
+  Product,
+  Category,
+  Brand,
+  Collection,
+  Blog,
+  BlogCategory,
+} from "../../database/models";
 import { detectFileType, looksLikeValidPdfStructure } from "./fileSignature";
 import { getStorageProvider } from "./media.storage";
 import { logMediaEvent } from "./mediaLogger";
@@ -159,6 +173,10 @@ export interface UploadedMediaItem {
   height?: number;
   pageCount?: number;
   status: MediaStatus;
+  // True when this upload matched an existing asset by content hash and no
+  // new file/record was created — the caller got back the pre-existing asset
+  // (spec §17).
+  deduped?: boolean;
 }
 
 export interface UploadError {
@@ -171,7 +189,7 @@ export interface UploadResult {
   errors: UploadError[];
 }
 
-function toUploadedItem(doc: MediaDocument): UploadedMediaItem {
+function toUploadedItem(doc: MediaDocument, deduped = false): UploadedMediaItem {
   const base: UploadedMediaItem = {
     mediaId: doc._id.toString(),
     mediaType: doc.mediaType,
@@ -180,6 +198,7 @@ function toUploadedItem(doc: MediaDocument): UploadedMediaItem {
     size: doc.size,
     status: doc.status,
   };
+  if (deduped) base.deduped = true;
   if (doc.width) base.width = doc.width;
   if (doc.height) base.height = doc.height;
   if (doc.pageCount !== undefined) base.pageCount = doc.pageCount;
@@ -225,6 +244,26 @@ async function processOneFile(
   try {
     if (detected.mediaType === "IMAGE") {
       const processed = await processImage(file.buffer, keyPrefix);
+
+      // Dedupe (spec §17): the hash is over the processed `optimized` bytes,
+      // which are deterministic from the source — so re-uploading the same
+      // file resolves to the asset already in the library instead of writing
+      // another physical copy. Keyed on the optimized output (not the raw
+      // upload) so the migration can backfill it from files already on disk.
+      const contentHash = crypto
+        .createHash("sha256")
+        .update(processed.variants.optimized.buffer)
+        .digest("hex");
+      const existing = await Media.findOne({ mediaType: "IMAGE", contentHash }).exec();
+      if (existing) {
+        logMediaEvent("MEDIA_UPLOAD_SUCCESS", {
+          actorId: uploadedBy,
+          mediaId: existing._id.toString(),
+          deduped: "true",
+        });
+        return { item: toUploadedItem(existing, true) };
+      }
+
       for (const variant of Object.values(processed.variants)) {
         await storage.upload(variant.key, variant.buffer);
         writtenKeys.push(variant.key);
@@ -260,6 +299,7 @@ async function processOneFile(
         size: processed.variants.optimized.size,
         width: processed.width,
         height: processed.height,
+        contentHash,
         status: "TEMPORARY",
         uploadedBy,
       });
@@ -346,6 +386,11 @@ function escapeRegex(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function toPositiveInt(value: unknown): number | undefined {
+  const n = typeof value === "string" ? Number(value) : typeof value === "number" ? value : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
 export interface MediaListParams {
   page: number;
   pageSize: number;
@@ -354,6 +399,10 @@ export interface MediaListParams {
   mediaType?: unknown;
   mimeType?: unknown;
   entityType?: unknown;
+  minWidth?: unknown;
+  maxWidth?: unknown;
+  minHeight?: unknown;
+  maxHeight?: unknown;
   sort?: unknown;
   order?: unknown;
 }
@@ -378,10 +427,28 @@ function buildFilter(params: MediaListParams): Record<string, unknown> {
     filter.entityType = params.entityType.trim();
   }
 
+  // Dimension-range filter (spec §6).
+  const minWidth = toPositiveInt(params.minWidth);
+  const maxWidth = toPositiveInt(params.maxWidth);
+  const minHeight = toPositiveInt(params.minHeight);
+  const maxHeight = toPositiveInt(params.maxHeight);
+  if (minWidth || maxWidth) {
+    filter.width = {
+      ...(minWidth ? { $gte: minWidth } : {}),
+      ...(maxWidth ? { $lte: maxWidth } : {}),
+    };
+  }
+  if (minHeight || maxHeight) {
+    filter.height = {
+      ...(minHeight ? { $gte: minHeight } : {}),
+      ...(maxHeight ? { $lte: maxHeight } : {}),
+    };
+  }
+
   return filter;
 }
 
-function toListItem(doc: MediaDocument) {
+function baseListItem(doc: MediaDocument) {
   return {
     mediaId: doc._id.toString(),
     mediaType: doc.mediaType,
@@ -404,6 +471,18 @@ function toListItem(doc: MediaDocument) {
   };
 }
 
+// One aggregate for a whole page of results — how many entities currently
+// reference each asset, so the library can show "used in N places" and the
+// delete button knows whether it will be blocked before the click.
+async function usageCountMap(mediaIds: mongoose.Types.ObjectId[]): Promise<Map<string, number>> {
+  if (mediaIds.length === 0) return new Map();
+  const rows = await MediaUsage.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+    { $match: { mediaId: { $in: mediaIds } } },
+    { $group: { _id: "$mediaId", count: { $sum: 1 } } },
+  ]);
+  return new Map(rows.map((r) => [r._id.toString(), r.count]));
+}
+
 export async function getMediaList(params: MediaListParams) {
   const { page, pageSize, sort, order } = params;
   const field: SortableField =
@@ -422,8 +501,13 @@ export async function getMediaList(params: MediaListParams) {
     Media.countDocuments(filter),
   ]);
 
+  const counts = await usageCountMap(docs.map((d) => d._id));
+
   return {
-    items: docs.map(toListItem),
+    items: docs.map((doc) => ({
+      ...baseListItem(doc),
+      usageCount: counts.get(doc._id.toString()) ?? 0,
+    })),
     page,
     pageSize,
     total,
@@ -436,20 +520,35 @@ export async function getMediaById(id: string) {
   if (!isValidObjectId(id)) return null;
   const doc = await Media.findById(id).exec();
   if (!doc) return null;
-  return toListItem(doc);
+  const counts = await usageCountMap([doc._id]);
+  return { ...baseListItem(doc), usageCount: counts.get(doc._id.toString()) ?? 0 };
 }
 
 export async function updateMediaById(id: string, patch: UpdateMediaBody) {
   if (!isValidObjectId(id)) return null;
   const doc = await Media.findByIdAndUpdate(id, { $set: patch }, { returnDocument: "after" }).exec();
   if (!doc) return null;
-  return toListItem(doc);
+  const counts = await usageCountMap([doc._id]);
+  return { ...baseListItem(doc), usageCount: counts.get(doc._id.toString()) ?? 0 };
 }
 
 export async function deleteMediaById(id: string, actorId: string): Promise<boolean | null> {
   if (!isValidObjectId(id)) return null;
   const doc = await Media.findById(id).exec();
   if (!doc) return null;
+
+  // Reference-safety (spec §10): never pull a file out from under an entity
+  // that still points at it. The caller must detach every usage first.
+  const usages = await getMediaUsages(id);
+  if (usages.length > 0) {
+    const n = usages.length;
+    throw new AppError(
+      `This image is used in ${n} place${n === 1 ? "" : "s"} and can't be permanently deleted until those references are removed.`,
+      409,
+      true,
+      { usageCount: n, usages }
+    );
+  }
 
   const keys = doc.variants
     ? [doc.variants.thumbnail.key, doc.variants.medium.key, doc.variants.optimized.key]
@@ -475,51 +574,175 @@ export async function deleteMediaById(id: string, actorId: string): Promise<bool
   return true;
 }
 
-// ---- Cross-module attachment primitives ----
-// Generic on purpose — Media doesn't know or care what an "IMAGE-only" rule
-// means to a particular entity type; that's the calling module's business
-// rule (see category.service.ts) to enforce before calling attach.
+// ---- Cross-module reference primitives ----
+// A Media doc is now a pure asset. Which entities USE it lives in the
+// MediaUsage collection — one row per (asset, entity, field) — so one
+// physical file can be referenced by many products / blogs / categories
+// without being copied (spec §4). Media.status is a denormalised cache of
+// "has ≥1 usage row", kept in sync here so the list filter and the cleanup
+// job stay index-only.
+// Generic on purpose — Media doesn't know what an "IMAGE-only" rule means to
+// a particular entity type; that's the calling module's rule to enforce
+// before calling attach (see category.service.ts).
 
 export async function getMediaDocById(id: string): Promise<MediaDocument | null> {
   if (!isValidObjectId(id)) return null;
   return Media.findById(id).exec();
 }
 
-// Single-owner by design: a Media doc's entityType/entityId point at exactly
-// one attached entity at a time. Re-attaching to the SAME entity is a no-op
-// (safe to call again, e.g. on an update that didn't actually change the
-// image). Attaching a doc already ATTACHED elsewhere is rejected — the
-// calling module must detach it from its previous owner first if reuse is
-// ever intended.
+async function recomputeMediaStatus(mediaId: string): Promise<void> {
+  const stillUsed = await MediaUsage.exists({ mediaId });
+  await Media.updateOne(
+    { _id: mediaId },
+    { $set: { status: stillUsed ? "ATTACHED" : "TEMPORARY" } }
+  );
+}
+
+export interface AttachMediaOptions {
+  field: MediaUsageField;
+  sortOrder?: number;
+  isPrimary?: boolean;
+  /** Context-specific alt text — stored on the usage row, not the asset. */
+  altText?: string | null;
+}
+
+// Idempotent upsert of a single (asset → entity → field) reference. Calling
+// it again for the same slot just updates ordering / primary / alt. Unlike
+// the old single-owner version this NEVER rejects an asset that is already
+// used elsewhere — reuse is the point.
 export async function attachMediaToEntity(
   mediaId: string,
   entityType: MediaEntityType,
-  entityId: string
+  entityId: string,
+  opts: AttachMediaOptions
 ): Promise<MediaDocument> {
   const doc = await getMediaDocById(mediaId);
   if (!doc) {
     throw new AppError("Media not found", 404);
   }
-  if (doc.status === "ATTACHED" && doc.entityId && doc.entityId.toString() !== entityId) {
-    throw new AppError("This media is already attached to another item", 409);
+
+  const set: Record<string, unknown> = { field: opts.field };
+  if (opts.sortOrder !== undefined) set.sortOrder = opts.sortOrder;
+  if (opts.isPrimary !== undefined) set.isPrimary = opts.isPrimary;
+  if (opts.altText !== undefined) {
+    set.altText = opts.altText === null ? undefined : opts.altText;
   }
-  doc.entityType = entityType;
-  doc.entityId = new mongoose.Types.ObjectId(entityId);
-  doc.status = "ATTACHED";
-  await doc.save();
+
+  await MediaUsage.updateOne(
+    { mediaId, entityType, entityId, field: opts.field },
+    { $set: set, $setOnInsert: { mediaId, entityType, entityId } },
+    { upsert: true }
+  );
+
+  if (doc.status !== "ATTACHED") {
+    doc.status = "ATTACHED";
+    await doc.save();
+  }
   return doc;
 }
 
-// Reverts a media doc to TEMPORARY rather than deleting it — it may still
-// be a perfectly good file, just no longer referenced by anything; the TTL
-// cleanup job reclaims it later if nothing re-attaches it in time. Safe to
-// call with an id that no longer exists (e.g. already deleted directly).
-export async function detachMedia(mediaId: string | undefined | null): Promise<void> {
-  if (!mediaId) return;
-  const doc = await getMediaDocById(mediaId);
-  if (!doc) return;
-  doc.entityType = undefined;
-  doc.entityId = undefined;
-  doc.status = "TEMPORARY";
-  await doc.save();
+export interface DetachScope {
+  entityType?: MediaEntityType;
+  entityId?: string;
+  field?: MediaUsageField;
+}
+
+// Removes reference rows, not the asset. With no scope it removes EVERY
+// usage of the asset (the "this entity is being hard-deleted, drop all of
+// its media links" path). With a scope it removes only the matching
+// (entity[/field]) rows, leaving the asset attached wherever else it's
+// used. The asset itself is kept and reverts to TEMPORARY once its last
+// usage goes — the TTL cleanup job reclaims it later if nothing re-attaches.
+// Safe to call with an id that no longer exists.
+export async function detachMedia(
+  mediaId: string | undefined | null,
+  scope?: DetachScope
+): Promise<void> {
+  if (!mediaId || !isValidObjectId(mediaId)) return;
+
+  const filter: Record<string, unknown> = { mediaId };
+  if (scope?.entityType) filter.entityType = scope.entityType;
+  if (scope?.entityId) filter.entityId = scope.entityId;
+  if (scope?.field) filter.field = scope.field;
+
+  await MediaUsage.deleteMany(filter);
+  await recomputeMediaStatus(mediaId);
+}
+
+// ---- "Where is this used" ----
+
+export interface MediaUsageInfo {
+  entityType: MediaEntityType;
+  entityId: string;
+  field: MediaUsageField;
+  label: string;
+}
+
+const USAGE_LABEL_LOADERS: Partial<
+  Record<MediaEntityType, (ids: string[]) => Promise<Map<string, string>>>
+> = {
+  PRODUCT: (ids) => labelMap(Product, ids, "name"),
+  CATEGORY: (ids) => labelMap(Category, ids, "name"),
+  BRAND: (ids) => labelMap(Brand, ids, "name"),
+  COLLECTION: (ids) => labelMap(Collection, ids, "name"),
+  BLOG: (ids) => labelMap(Blog, ids, "title"),
+  BLOG_CATEGORY: (ids) => labelMap(BlogCategory, ids, "name"),
+};
+
+async function labelMap(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Model: any,
+  ids: string[],
+  labelField: string
+): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map();
+  const docs = await Model.find({ _id: { $in: ids } })
+    .select(labelField)
+    .lean()
+    .exec();
+  return new Map(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    docs.map((d: any) => [String(d._id), String(d[labelField] ?? "")])
+  );
+}
+
+export async function getMediaUsages(mediaId: string): Promise<MediaUsageInfo[]> {
+  if (!isValidObjectId(mediaId)) return [];
+  const rows = await MediaUsage.find({ mediaId })
+    .sort({ entityType: 1, createdAt: 1 })
+    .lean()
+    .exec();
+  if (rows.length === 0) return [];
+
+  // Resolve display labels in one query per entity type.
+  const byType = new Map<MediaEntityType, string[]>();
+  for (const row of rows) {
+    const list = byType.get(row.entityType) ?? [];
+    list.push(String(row.entityId));
+    byType.set(row.entityType, list);
+  }
+  const labels = new Map<string, string>();
+  await Promise.all(
+    [...byType.entries()].map(async ([type, ids]) => {
+      const loader = USAGE_LABEL_LOADERS[type];
+      if (!loader) return;
+      const map = await loader(ids);
+      for (const [id, label] of map) labels.set(`${type}:${id}`, label);
+    })
+  );
+
+  return rows.map((row) => {
+    const entityId = String(row.entityId);
+    return {
+      entityType: row.entityType,
+      entityId,
+      field: row.field,
+      label: labels.get(`${row.entityType}:${entityId}`) || `${row.entityType} ${entityId}`,
+    };
+  });
+}
+
+export async function countMediaUsages(mediaId: string): Promise<number> {
+  if (!isValidObjectId(mediaId)) return 0;
+  return MediaUsage.countDocuments({ mediaId });
 }

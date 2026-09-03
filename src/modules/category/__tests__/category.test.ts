@@ -3,7 +3,7 @@ import request from "supertest";
 import mongoose from "mongoose";
 import app from "../../../app";
 import { connectDatabase } from "../../../database/connection";
-import { User, Media, Category, MediaEntityType } from "../../../database/models";
+import { User, Media, MediaUsage, Category, MediaEntityType } from "../../../database/models";
 import { signSessionToken } from "../../auth/auth.service";
 import {
   createCategory,
@@ -65,6 +65,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await Category.deleteMany({ _id: { $in: createdCategoryIds } });
+  await MediaUsage.deleteMany({ mediaId: { $in: createdMediaIds } });
   await Media.deleteMany({ _id: { $in: createdMediaIds } });
   await User.deleteMany({ _id: { $in: createdUserIds } });
   await mongoose.connection.close();
@@ -114,17 +115,19 @@ describe("category.service (unit)", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
-  it("rejects media already attached to a different entity", async () => {
+  it("allows an image already used by another entity to be reused (no single-owner lock)", async () => {
     const otherCategory = await createCategory({ name: `Other-${RUN_ID}` });
     createdCategoryIds.push(new mongoose.Types.ObjectId(otherCategory!.categoryId));
-    const takenMedia = await makeMedia({
-      status: "ATTACHED",
-      entityType: "CATEGORY",
-      entityId: new mongoose.Types.ObjectId(otherCategory!.categoryId),
-    });
-    await expect(
-      createCategory({ name: "Steals Image Test", imageMediaId: takenMedia._id.toString() })
-    ).rejects.toMatchObject({ statusCode: 409 });
+    const shared = await makeMedia();
+    await updateCategoryById(otherCategory!.categoryId, { imageMediaId: shared._id.toString() });
+
+    const reuser = await createCategory({ name: `Reuser-${RUN_ID}`, imageMediaId: shared._id.toString() });
+    createdCategoryIds.push(new mongoose.Types.ObjectId(reuser!.categoryId));
+    expect(reuser!.image?.mediaId).toBe(shared._id.toString());
+
+    // One physical asset, two independent usage references.
+    const usageCount = await MediaUsage.countDocuments({ mediaId: shared._id });
+    expect(usageCount).toBe(2);
   });
 
   it("attaches a valid image and flips its status to ATTACHED", async () => {
@@ -134,22 +137,19 @@ describe("category.service (unit)", () => {
 
     const fresh = await Media.findById(media._id).lean();
     expect(fresh?.status).toBe("ATTACHED");
-    expect(fresh?.entityType).toBe("CATEGORY");
-    expect(fresh?.entityId?.toString()).toBe(category!.categoryId);
+    const usage = await MediaUsage.findOne({ mediaId: media._id }).lean();
+    expect(usage?.entityType).toBe("CATEGORY");
+    expect(usage?.entityId?.toString()).toBe(category!.categoryId);
+    expect(usage?.field).toBe("image");
     expect(category!.image?.mediaId).toBe(media._id.toString());
   });
 
-  it("rolls back category creation if media attach fails (compensating action)", async () => {
-    const otherCategory = await createCategory({ name: `RollbackOwner-${RUN_ID}` });
-    createdCategoryIds.push(new mongoose.Types.ObjectId(otherCategory!.categoryId));
-    const takenMedia = await makeMedia({
-      status: "ATTACHED",
-      entityType: "CATEGORY",
-      entityId: new mongoose.Types.ObjectId(otherCategory!.categoryId),
-    });
-
+  it("rolls back category creation when the referenced image cannot be resolved", async () => {
+    const missingId = new mongoose.Types.ObjectId().toString();
     const beforeCount = await Category.countDocuments({ name: "Rollback Test" });
-    await expect(createCategory({ name: "Rollback Test", imageMediaId: takenMedia._id.toString() })).rejects.toThrow();
+    await expect(
+      createCategory({ name: "Rollback Test", imageMediaId: missingId })
+    ).rejects.toThrow();
     const afterCount = await Category.countDocuments({ name: "Rollback Test" });
     expect(afterCount).toBe(beforeCount);
   });
@@ -189,9 +189,12 @@ describe("category.service (unit)", () => {
       Media.findById(media2._id).lean(),
     ]);
     expect(freshMedia1?.status).toBe("TEMPORARY");
-    expect(freshMedia1?.entityId).toBeUndefined();
     expect(freshMedia2?.status).toBe("ATTACHED");
-    expect(freshMedia2?.entityId?.toString()).toBe(category!.categoryId);
+
+    // The old usage row is gone; the new one points at this category.
+    expect(await MediaUsage.countDocuments({ mediaId: media1._id })).toBe(0);
+    const usage2 = await MediaUsage.findOne({ mediaId: media2._id }).lean();
+    expect(usage2?.entityId?.toString()).toBe(category!.categoryId);
   });
 
   it("deleting a category with children is blocked with a dependency count", async () => {

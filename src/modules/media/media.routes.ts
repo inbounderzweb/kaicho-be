@@ -8,6 +8,7 @@ import {
   uploadMediaHandler,
   getMediaListHandler,
   getMediaDetailHandler,
+  getMediaUsagesHandler,
   updateMediaHandler,
   deleteMediaHandler,
 } from "./media.controller";
@@ -59,6 +60,7 @@ router.post(
 );
 
 router.get("/", getMediaListHandler);
+router.get("/:id/usages", getMediaUsagesHandler);
 router.get("/:id", getMediaDetailHandler);
 router.patch("/:id", validateBody(updateMediaSchema), updateMediaHandler);
 router.delete("/:id", mediaDeleteLimiter, deleteMediaHandler);

@@ -3,7 +3,7 @@ import request from "supertest";
 import mongoose from "mongoose";
 import app from "../../../app";
 import { connectDatabase } from "../../../database/connection";
-import { User, Media, Brand, Product, Category } from "../../../database/models";
+import { User, Media, MediaUsage, Brand, Product, Category } from "../../../database/models";
 import { signSessionToken } from "../../auth/auth.service";
 import { createBrand, updateBrandById, deleteBrandById } from "../brand.service";
 import { createProduct } from "../../product/product.service";
@@ -61,6 +61,7 @@ afterAll(async () => {
   await Product.deleteMany({ _id: { $in: createdProductIds } });
   await Category.deleteMany({ _id: { $in: createdCategoryIds } });
   await Brand.deleteMany({ _id: { $in: createdBrandIds } });
+  await MediaUsage.deleteMany({ mediaId: { $in: createdMediaIds } });
   await Media.deleteMany({ _id: { $in: createdMediaIds } });
   await User.deleteMany({ _id: { $in: createdUserIds } });
   await mongoose.connection.close();
@@ -102,7 +103,11 @@ describe("brand.service (unit)", () => {
 
     const fresh = await Media.findById(media._id).lean();
     expect(fresh?.status).toBe("ATTACHED");
-    expect(fresh?.entityType).toBe("BRAND");
+    // The entity pointer now lives on a MediaUsage row, not the Media doc.
+    const usage = await MediaUsage.findOne({ mediaId: media._id }).lean();
+    expect(usage?.entityType).toBe("BRAND");
+    expect(usage?.entityId?.toString()).toBe(brand!.brandId);
+    expect(usage?.field).toBe("logo");
     expect(brand!.logo?.mediaId).toBe(media._id.toString());
   });
 

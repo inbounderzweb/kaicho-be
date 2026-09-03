@@ -6,7 +6,8 @@ import path from "path";
 import sharp from "sharp";
 import app from "../../../app";
 import { connectDatabase } from "../../../database/connection";
-import { User, Media } from "../../../database/models";
+import { User, Media, MediaUsage } from "../../../database/models";
+import { attachMediaToEntity, detachMedia } from "../media.service";
 import { signSessionToken } from "../../auth/auth.service";
 import { getMediaRoot } from "../media.storage";
 import { cleanupExpiredTemporaryMedia } from "../mediaCleanup";
@@ -26,9 +27,15 @@ async function makeUser(role: "user" | "admin" = "user") {
   return user;
 }
 
+// Each synthetic image gets a random background so its processed bytes — and
+// therefore its content hash — are unique per call. The upload pipeline now
+// dedupes byte-identical images (spec §17), so fixtures that reuse the exact
+// same solid color would otherwise all resolve to the first one uploaded.
+const rnd = () => Math.floor(Math.random() * 256);
+
 async function jpegBuffer(width = 400, height = 300): Promise<Buffer> {
   return sharp({
-    create: { width, height, channels: 3, background: { r: 200, g: 100, b: 50 } },
+    create: { width, height, channels: 3, background: { r: rnd(), g: rnd(), b: rnd() } },
   })
     .jpeg()
     .toBuffer();
@@ -36,7 +43,7 @@ async function jpegBuffer(width = 400, height = 300): Promise<Buffer> {
 
 async function pngWithAlphaBuffer(width = 400, height = 300): Promise<Buffer> {
   return sharp({
-    create: { width, height, channels: 4, background: { r: 10, g: 10, b: 10, alpha: 0 } },
+    create: { width, height, channels: 4, background: { r: rnd(), g: rnd(), b: rnd(), alpha: 0 } },
   })
     .png()
     .toBuffer();
@@ -44,7 +51,7 @@ async function pngWithAlphaBuffer(width = 400, height = 300): Promise<Buffer> {
 
 async function webpBuffer(width = 400, height = 300): Promise<Buffer> {
   return sharp({
-    create: { width, height, channels: 3, background: { r: 50, g: 150, b: 50 } },
+    create: { width, height, channels: 3, background: { r: rnd(), g: rnd(), b: rnd() } },
   })
     .webp()
     .toBuffer();
@@ -52,7 +59,7 @@ async function webpBuffer(width = 400, height = 300): Promise<Buffer> {
 
 async function avifBuffer(width = 200, height = 150): Promise<Buffer> {
   return sharp({
-    create: { width, height, channels: 3, background: { r: 80, g: 80, b: 200 } },
+    create: { width, height, channels: 3, background: { r: rnd(), g: rnd(), b: rnd() } },
   })
     .avif({ quality: 50 })
     .toBuffer();
@@ -104,6 +111,7 @@ afterAll(async () => {
       if (fs.existsSync(p)) fs.unlinkSync(p);
     }
   }
+  await MediaUsage.deleteMany({ mediaId: { $in: createdMediaIds } });
   await Media.deleteMany({ _id: { $in: createdMediaIds } });
   await User.deleteMany({ _id: { $in: createdUserIds } });
   await mongoose.connection.close();
@@ -390,6 +398,84 @@ describe("Media detail / update / delete (integration)", () => {
       .delete(`/api/admin/media/${new mongoose.Types.ObjectId().toString()}`)
       .set("Cookie", authCookie(admin));
     expect(res.status).toBe(404);
+  });
+});
+
+describe("Media reuse & reference safety (integration)", () => {
+  async function upload(admin: Awaited<ReturnType<typeof makeUser>>, name: string, buf: Buffer) {
+    const res = await request(app)
+      .post("/api/admin/media/upload")
+      .set("Cookie", authCookie(admin))
+      .attach("files", buf, name);
+    const item = res.body.data[0];
+    createdMediaIds.push(new mongoose.Types.ObjectId(item.mediaId));
+    return item as { mediaId: string; deduped?: boolean };
+  }
+
+  it("dedupes a byte-identical re-upload to the existing asset (§17)", async () => {
+    const admin = await makeUser("admin");
+    const buf = await jpegBuffer(240, 180);
+
+    const first = await upload(admin, "dup-a.jpg", buf);
+    const second = await upload(admin, "dup-b.jpg", buf);
+
+    expect(second.mediaId).toBe(first.mediaId);
+    expect(second.deduped).toBe(true);
+  });
+
+  it("blocks deletion while the asset is referenced, then allows it once detached (§10)", async () => {
+    const admin = await makeUser("admin");
+    const { mediaId } = await upload(admin, "shared.jpg", await jpegBuffer(200, 200));
+    const entityId = new mongoose.Types.ObjectId().toString();
+
+    await attachMediaToEntity(mediaId, "PRODUCT", entityId, { field: "gallery" });
+
+    const blocked = await request(app)
+      .delete(`/api/admin/media/${mediaId}`)
+      .set("Cookie", authCookie(admin));
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.details.usageCount).toBe(1);
+
+    const usagesRes = await request(app)
+      .get(`/api/admin/media/${mediaId}/usages`)
+      .set("Cookie", authCookie(admin));
+    expect(usagesRes.status).toBe(200);
+    expect(usagesRes.body.data.usages).toHaveLength(1);
+    expect(usagesRes.body.data.usages[0].entityType).toBe("PRODUCT");
+
+    await detachMedia(mediaId, { entityType: "PRODUCT", entityId });
+
+    const ok = await request(app)
+      .delete(`/api/admin/media/${mediaId}`)
+      .set("Cookie", authCookie(admin));
+    expect(ok.status).toBe(200);
+    expect(await Media.findById(mediaId).lean()).toBeNull();
+  });
+
+  it("cleanup does not reclaim an asset that still has a usage row", async () => {
+    const admin = await makeUser("admin");
+    const doc = await Media.create({
+      mediaType: "DOCUMENT",
+      storageProvider: "local",
+      storageKey: `documents/test/${RUN_ID}-referenced.pdf`,
+      originalName: "referenced.pdf",
+      mimeType: "application/pdf",
+      extension: "pdf",
+      size: 100,
+      status: "TEMPORARY",
+      uploadedBy: admin._id,
+      createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000),
+    });
+    createdMediaIds.push(doc._id);
+    await attachMediaToEntity(doc._id.toString(), "BLOG", new mongoose.Types.ObjectId().toString(), {
+      field: "body",
+    });
+
+    await cleanupExpiredTemporaryMedia();
+
+    const fresh = await Media.findById(doc._id).lean();
+    expect(fresh).not.toBeNull();
+    expect(fresh?.status).toBe("ATTACHED");
   });
 });
 

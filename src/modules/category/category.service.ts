@@ -155,7 +155,9 @@ export async function createCategory(input: CreateCategoryInput) {
 
   if (input.imageMediaId) {
     try {
-      await attachMediaToEntity(input.imageMediaId, "CATEGORY", doc._id.toString());
+      await attachMediaToEntity(input.imageMediaId, "CATEGORY", doc._id.toString(), {
+        field: "image",
+      });
     } catch (err) {
       // Compensating action in place of a real Mongo transaction — this is a
       // standalone dev DB (no replica set), so multi-document transactions
@@ -218,8 +220,12 @@ export async function updateCategoryById(id: string, patch: UpdateCategoryInput)
   await doc.save();
 
   if (imageProvided && nextImageMediaId !== previousImageMediaId) {
-    if (nextImageMediaId) await attachMediaToEntity(nextImageMediaId, "CATEGORY", id);
-    if (previousImageMediaId) await detachMedia(previousImageMediaId);
+    if (nextImageMediaId) {
+      await attachMediaToEntity(nextImageMediaId, "CATEGORY", id, { field: "image" });
+    }
+    if (previousImageMediaId) {
+      await detachMedia(previousImageMediaId, { entityType: "CATEGORY", entityId: id, field: "image" });
+    }
   }
 
   return getCategoryById(id);
@@ -246,7 +252,9 @@ export async function deleteCategoryById(id: string) {
   }
 
   await doc.deleteOne();
-  if (doc.imageMediaId) await detachMedia(doc.imageMediaId.toString());
+  if (doc.imageMediaId) {
+    await detachMedia(doc.imageMediaId.toString(), { entityType: "CATEGORY", entityId: id });
+  }
   return true;
 }
 

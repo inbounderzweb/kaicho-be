@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
 import { Collection, CollectionDocument, Media, Product } from "../../database/models";
 import { getStorageProvider } from "../media/media.storage";
-import { getMediaDocById } from "../media/media.service";
+import { getMediaDocById, attachMediaToEntity, detachMedia } from "../media/media.service";
 import { slugify } from "../../common/utils/slugify";
 import { getProductSummariesByIds } from "../product/product.service";
 import type {
@@ -28,14 +28,18 @@ function toImageInfo(media: any) {
   };
 }
 
-async function validateProducts(items: { productId: string; sortOrder: number }[]) {
+async function validateProducts(
+  items: { productId: string; sortOrder: number }[]
+): Promise<{ productId: mongoose.Types.ObjectId; sortOrder: number }[]> {
   const unique = [...new Map(items.map((p) => [p.productId, p])).values()];
   const ids = unique.map((p) => p.productId);
   const docs = await Product.find({ _id: { $in: ids }, status: { $in: [...PUBLIC_PRODUCT_STATUSES] } })
     .select("_id")
     .lean();
   if (docs.length !== ids.length) throw new AppError("One or more products are invalid or unavailable", 400);
-  return unique.sort((a, b) => a.sortOrder - b.sortOrder);
+  return unique
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((p) => ({ productId: new mongoose.Types.ObjectId(p.productId), sortOrder: p.sortOrder }));
 }
 
 function shapeCollection(doc: any, media: any, products: any[] = []) {
@@ -70,6 +74,18 @@ export async function createCollection(input: CreateCollectionInput) {
     sortOrder: input.sortOrder ?? 0,
     products,
   });
+
+  if (input.imageMediaId) {
+    try {
+      await attachMediaToEntity(input.imageMediaId, "COLLECTION", doc._id.toString(), {
+        field: "image",
+      });
+    } catch (err) {
+      // Compensating rollback — same rationale as category/brand.service.ts.
+      await doc.deleteOne();
+      throw err;
+    }
+  }
   return getCollectionById(doc._id.toString());
 }
 
@@ -84,11 +100,27 @@ export async function updateCollection(id: string, patch: UpdateCollectionInput)
     doc.slug = slug;
   }
   if (patch.description !== undefined) doc.description = patch.description?.trim() || undefined;
-  if (patch.imageMediaId !== undefined) doc.imageMediaId = patch.imageMediaId || undefined;
+
+  const prevImageId = doc.imageMediaId?.toString();
+  let nextImageId: string | undefined;
+  if (patch.imageMediaId !== undefined) {
+    nextImageId = patch.imageMediaId || undefined;
+    doc.imageMediaId = nextImageId ? new mongoose.Types.ObjectId(nextImageId) : undefined;
+  }
+
   if (patch.isActive !== undefined) doc.isActive = patch.isActive;
   if (patch.sortOrder !== undefined) doc.sortOrder = patch.sortOrder;
   if (patch.products) doc.products = await validateProducts(patch.products);
   await doc.save();
+
+  if (patch.imageMediaId !== undefined && nextImageId !== prevImageId) {
+    if (nextImageId) {
+      await attachMediaToEntity(nextImageId, "COLLECTION", id, { field: "image" });
+    }
+    if (prevImageId) {
+      await detachMedia(prevImageId, { entityType: "COLLECTION", entityId: id, field: "image" });
+    }
+  }
   return getCollectionById(id);
 }
 
@@ -104,6 +136,9 @@ export async function updateCollectionProducts(id: string, input: UpdateCollecti
 export async function deleteCollection(id: string) {
   if (!isValidObjectId(id)) return null;
   const res = await Collection.findByIdAndDelete(id).exec();
+  if (res?.imageMediaId) {
+    await detachMedia(res.imageMediaId.toString(), { entityType: "COLLECTION", entityId: id });
+  }
   return Boolean(res);
 }
 

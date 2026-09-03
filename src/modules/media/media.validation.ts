@@ -16,12 +16,18 @@ export const updateMediaSchema = z
 
 export type UpdateMediaBody = z.infer<typeof updateMediaSchema>;
 
+const dimension = z.coerce.number().int().positive().max(100000).optional();
+
 export const mediaListQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   status: z.enum(MEDIA_STATUSES).optional(),
   mediaType: z.enum(MEDIA_TYPES).optional(),
   mimeType: z.string().trim().max(100).optional(),
   entityType: z.enum(MEDIA_ENTITY_TYPES).optional(),
+  minWidth: dimension,
+  maxWidth: dimension,
+  minHeight: dimension,
+  maxHeight: dimension,
   sort: z.enum(["createdAt", "size", "originalName"]).optional(),
   order: z.enum(["asc", "desc"]).optional(),
 });

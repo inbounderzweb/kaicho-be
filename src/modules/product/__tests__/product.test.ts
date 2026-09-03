@@ -3,7 +3,7 @@ import request from "supertest";
 import mongoose from "mongoose";
 import app from "../../../app";
 import { connectDatabase } from "../../../database/connection";
-import { User, Media, Category, Brand, Product } from "../../../database/models";
+import { User, Media, MediaUsage, Category, Brand, Product } from "../../../database/models";
 import { signSessionToken } from "../../auth/auth.service";
 import {
   createProduct,
@@ -108,6 +108,7 @@ afterAll(async () => {
   await Product.deleteMany({ _id: { $in: createdProductIds } });
   await Brand.deleteMany({ _id: { $in: createdBrandIds } });
   await Category.deleteMany({ _id: { $in: createdCategoryIds } });
+  await MediaUsage.deleteMany({ mediaId: { $in: createdMediaIds } });
   await Media.deleteMany({ _id: { $in: createdMediaIds } });
   await User.deleteMany({ _id: { $in: createdUserIds } });
   await mongoose.connection.close();
@@ -179,13 +180,21 @@ describe("product.service: create (unit)", () => {
     expect(afterCount).toBe(beforeCount);
   });
 
-  it("rejects media already attached to another product", async () => {
-    const takenMedia = await makeMedia();
-    const owner = await createProduct(await validInput({ mediaIds: [takenMedia._id.toString()] }));
+  it("allows the same image to be reused across products (no single-owner lock)", async () => {
+    const shared = await makeMedia();
+    const owner = await createProduct(await validInput({ mediaIds: [shared._id.toString()] }));
     createdProductIds.push(new mongoose.Types.ObjectId(owner!.productId));
 
-    const input = await validInput({ mediaIds: [takenMedia._id.toString()] });
-    await expect(createProduct(input)).rejects.toMatchObject({ statusCode: 409 });
+    const reuser = await createProduct(await validInput({ mediaIds: [shared._id.toString()] }));
+    createdProductIds.push(new mongoose.Types.ObjectId(reuser!.productId));
+
+    expect(reuser!.images.map((i) => i.mediaId)).toContain(shared._id.toString());
+    // One physical asset, two independent PRODUCT usage references.
+    const usageCount = await MediaUsage.countDocuments({
+      mediaId: shared._id,
+      entityType: "PRODUCT",
+    });
+    expect(usageCount).toBe(2);
   });
 
   it("rejects a DOCUMENT media as a product image", async () => {
@@ -325,7 +334,16 @@ describe("product.service: update (unit)", () => {
     ]);
     expect(fresh1?.status).toBe("TEMPORARY");
     expect(fresh2?.status).toBe("ATTACHED");
-    expect(fresh2?.isPrimary).toBe(true);
+
+    // isPrimary / sortOrder now live on the per-product usage row.
+    expect(await MediaUsage.countDocuments({ mediaId: media1._id })).toBe(0);
+    const usage2 = await MediaUsage.findOne({
+      mediaId: media2._id,
+      entityType: "PRODUCT",
+      entityId: product!.productId,
+    }).lean();
+    expect(usage2?.isPrimary).toBe(true);
+    expect(usage2?.sortOrder).toBe(0);
   });
 
   it("updates category and brand references, validating the new ones", async () => {

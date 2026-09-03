@@ -4,6 +4,7 @@ import { env } from "../../config/env";
 
 export interface StorageProvider {
   upload(key: string, buffer: Buffer): Promise<void>;
+  read(key: string): Promise<Buffer>;
   delete(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;
   getUrl(key: string): string;
@@ -28,6 +29,10 @@ export class LocalStorageProvider implements StorageProvider {
     const filePath = resolveSafePath(key);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, buffer);
+  }
+
+  async read(key: string): Promise<Buffer> {
+    return fs.readFile(resolveSafePath(key));
   }
 
   async delete(key: string): Promise<void> {

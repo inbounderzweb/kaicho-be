@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
-import { Media, MediaDocument, MediaEntityType } from "../../database/models";
+import { Media, MediaDocument, MediaEntityType, MediaUsage, MediaUsageField } from "../../database/models";
 import { getMediaDocById, attachMediaToEntity, detachMedia } from "../media/media.service";
 import { getStorageProvider } from "../media/media.storage";
 
@@ -65,30 +65,43 @@ export async function assertImageMedia(mediaId: string): Promise<void> {
 }
 
 /**
- * Reconcile which Media docs are attached to a blog (or blog category). Attach
- * anything newly referenced, detach anything no longer referenced. Mirrors the
- * attach/detach dance in category.service.ts, generalised to a set of ids
- * (featured + thumbnail + OG + every body image).
+ * Reconcile which Media assets this blog (or blog category) references. Attach
+ * anything newly referenced, detach anything no longer referenced. All of a
+ * blog's images (featured + thumbnail + OG + every body image) share one
+ * `entityType` and, for the reference model, one `field` bucket — the row
+ * only needs to record THAT the blog uses the asset, so the delete guard and
+ * cleanup job see the reference. Attaching a now-shared asset never fails
+ * (unlike the old single-owner attach).
  */
 export async function syncEntityMedia(params: {
   entityType: MediaEntityType;
   entityId: string;
   nextIds: string[];
   prevIds: string[];
+  /** Slot label for the usage rows. Defaults per entity type. */
+  field?: MediaUsageField;
 }): Promise<void> {
+  const field: MediaUsageField =
+    params.field ?? (params.entityType === "BLOG_CATEGORY" ? "image" : "body");
   const next = new Set(params.nextIds.filter(Boolean).map((v) => v.toLowerCase()));
   const prev = new Set(params.prevIds.filter(Boolean).map((v) => v.toLowerCase()));
 
   for (const id of next) {
-    if (!prev.has(id)) await attachMediaToEntity(id, params.entityType, params.entityId);
+    if (!prev.has(id)) {
+      await attachMediaToEntity(id, params.entityType, params.entityId, { field });
+    }
   }
   for (const id of prev) {
-    if (!next.has(id)) await detachMedia(id);
+    if (!next.has(id)) {
+      await detachMedia(id, { entityType: params.entityType, entityId: params.entityId, field });
+    }
   }
 }
 
-/** Detach everything a blog owns — used on hard delete. */
+/** Drop every media reference this entity holds — used on hard delete. */
 export async function detachAllEntityMedia(entityType: MediaEntityType, entityId: string): Promise<void> {
-  const docs = await Media.find({ entityType, entityId }).select("_id").lean();
-  for (const doc of docs) await detachMedia(doc._id.toString());
+  const rows = await MediaUsage.find({ entityType, entityId }).select("mediaId").lean();
+  for (const row of rows) {
+    await detachMedia(String(row.mediaId), { entityType, entityId });
+  }
 }

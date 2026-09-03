@@ -8,6 +8,7 @@ import {
   Brand,
   Media,
   MediaDocument,
+  MediaUsage,
 } from "../../database/models";
 import { attachMediaToEntity, detachMedia } from "../media/media.service";
 import { getStorageProvider } from "../media/media.storage";
@@ -105,33 +106,54 @@ async function syncProductMedia(productId: string, mediaIds: string[]): Promise<
     if (doc.mediaType !== "IMAGE") {
       throw new AppError("Only image media can be used for product photos", 400);
     }
-    const attachedElsewhere =
-      doc.status === "ATTACHED" &&
-      !(doc.entityType === "PRODUCT" && doc.entityId?.toString() === productId);
-    if (attachedElsewhere) {
-      throw new AppError("One or more selected images are already attached to another item", 409);
-    }
+    // No "already attached elsewhere" check any more — the same asset can be
+    // used by many products/pages (spec §4). Ordering + which one is primary
+    // are per-usage (MediaUsage rows), not global on the Media doc.
   }
 
-  const currentlyAttached = await Media.find({ entityType: "PRODUCT", entityId: productId }).exec();
+  const currentUsages = await MediaUsage.find({
+    entityType: "PRODUCT",
+    entityId: productId,
+  }).exec();
   const nextIdSet = new Set(uniqueIds);
-  for (const doc of currentlyAttached) {
-    if (!nextIdSet.has(doc._id.toString())) {
-      await detachMedia(doc._id.toString());
+  for (const usage of currentUsages) {
+    if (!nextIdSet.has(usage.mediaId.toString())) {
+      await detachMedia(usage.mediaId.toString(), {
+        entityType: "PRODUCT",
+        entityId: productId,
+        field: "gallery",
+      });
     }
   }
 
   for (let i = 0; i < uniqueIds.length; i++) {
-    const id = uniqueIds[i];
-    await attachMediaToEntity(id, "PRODUCT", productId);
-    await Media.updateOne({ _id: id }, { $set: { isPrimary: i === 0, sortOrder: i } });
+    await attachMediaToEntity(uniqueIds[i], "PRODUCT", productId, {
+      field: "gallery",
+      isPrimary: i === 0,
+      sortOrder: i,
+    });
   }
 }
 
-async function getProductImages(productId: string): Promise<MediaDocument[]> {
-  return Media.find({ entityType: "PRODUCT", entityId: productId })
+export interface ProductImageRef {
+  media: MediaDocument;
+  isPrimary: boolean;
+  sortOrder: number;
+}
+
+async function getProductImages(productId: string): Promise<ProductImageRef[]> {
+  const usages = await MediaUsage.find({ entityType: "PRODUCT", entityId: productId })
     .sort({ isPrimary: -1, sortOrder: 1 })
     .exec();
+  if (usages.length === 0) return [];
+  const media = await Media.find({ _id: { $in: usages.map((u) => u.mediaId) } }).exec();
+  const byId = new Map(media.map((m) => [m._id.toString(), m]));
+  const out: ProductImageRef[] = [];
+  for (const u of usages) {
+    const m = byId.get(u.mediaId.toString());
+    if (m) out.push({ media: m, isPrimary: u.isPrimary, sortOrder: u.sortOrder });
+  }
+  return out;
 }
 
 interface ProductImageInfo {
@@ -143,36 +165,55 @@ interface ProductImageInfo {
   sortOrder: number;
 }
 
-function toImageInfo(media: MediaDocument): ProductImageInfo {
+function toImageInfo(ref: ProductImageRef): ProductImageInfo {
+  const { media } = ref;
   const optimizedKey = media.variants ? media.variants.optimized.key : media.storageKey;
   return {
     mediaId: media._id.toString(),
     url: storage.getUrl(optimizedKey),
     mediumUrl: media.variants ? storage.getUrl(media.variants.medium.key) : undefined,
     thumbnailUrl: media.variants ? storage.getUrl(media.variants.thumbnail.key) : undefined,
-    isPrimary: media.isPrimary,
-    sortOrder: media.sortOrder,
+    isPrimary: ref.isPrimary,
+    sortOrder: ref.sortOrder,
   };
 }
 
-// Batch primary-image lookup for callers that only need a single URL per
-// product and can't use the richer DTOs above — currently checkout, which
-// SNAPSHOTS the URL onto each order line item (see Order.model.ts). Same
-// { entityType: "PRODUCT", isPrimary: true } query and same optimized-variant
-// URL derivation as hydratePublicListItems/toImageInfo, kept here so image
-// resolution stays in one module rather than being re-derived per feature.
-export async function getPrimaryImageUrlMap(
+// Batch "primary image Media doc per product" lookup — the primary flag now
+// lives on the MediaUsage row (per-usage), so this resolves productId → its
+// primary usage → the referenced Media doc in two queries, never N+1. Shared
+// by the admin list, the public catalog list, and getPrimaryImageUrlMap.
+async function primaryMediaMap(
   productIds: (string | mongoose.Types.ObjectId)[]
-): Promise<Map<string, string>> {
+): Promise<Map<string, MediaDocument>> {
   if (!productIds.length) return new Map();
-  const images = await Media.find({
+  const usages = await MediaUsage.find({
     entityType: "PRODUCT",
     entityId: { $in: productIds },
     isPrimary: true,
-  }).exec();
+  })
+    .lean()
+    .exec();
+  if (usages.length === 0) return new Map();
+  const media = await Media.find({ _id: { $in: usages.map((u) => u.mediaId) } }).exec();
+  const byMediaId = new Map(media.map((m) => [m._id.toString(), m]));
+  const out = new Map<string, MediaDocument>();
+  for (const u of usages) {
+    const m = byMediaId.get(String(u.mediaId));
+    if (m) out.set(String(u.entityId), m);
+  }
+  return out;
+}
+
+// Batch primary-image URL lookup for callers that only need a single URL per
+// product — currently checkout, which SNAPSHOTS the URL onto each order line
+// item (see Order.model.ts).
+export async function getPrimaryImageUrlMap(
+  productIds: (string | mongoose.Types.ObjectId)[]
+): Promise<Map<string, string>> {
+  const media = await primaryMediaMap(productIds);
   return new Map(
-    images.map((m) => [
-      m.entityId!.toString(),
+    [...media.entries()].map(([productId, m]) => [
+      productId,
       storage.getUrl(m.variants ? m.variants.optimized.key : m.storageKey),
     ])
   );
@@ -211,7 +252,7 @@ async function assertReadyForActivation(doc: ProductDocument): Promise<void> {
     problems.push("complete SEO details (title, description, and at least one keyword)");
   }
 
-  const imageCount = await Media.countDocuments({ entityType: "PRODUCT", entityId: doc._id });
+  const imageCount = await MediaUsage.countDocuments({ entityType: "PRODUCT", entityId: doc._id });
   if (imageCount === 0) problems.push("at least one product image");
 
   if (problems.length > 0) {
@@ -259,7 +300,9 @@ function toListItem(
     shortDescription: doc.shortDescription,
     category: { id: doc.categoryId.toString(), name: categoryName ?? null },
     brand: { id: doc.brandId.toString(), name: brandName ?? null },
-    image: primaryImage ? toImageInfo(primaryImage) : null,
+    image: primaryImage
+      ? toImageInfo({ media: primaryImage, isPrimary: true, sortOrder: 0 })
+      : null,
     pricing: { ...doc.pricing, discount, discountPercentage },
     inventory: doc.inventory,
     status: doc.status,
@@ -375,8 +418,12 @@ export async function createProduct(input: CreateProductInput, actorId?: string)
     // Compensating action in place of a real Mongo transaction — same
     // rationale as category.service.ts / brand.service.ts: standalone dev
     // DB, no replica set, nothing else in this codebase uses transactions.
-    const attached = await Media.find({ entityType: "PRODUCT", entityId: doc._id }).exec();
-    for (const m of attached) await detachMedia(m._id.toString());
+    const usages = await MediaUsage.find({ entityType: "PRODUCT", entityId: doc._id })
+      .select("mediaId")
+      .lean();
+    for (const u of usages) {
+      await detachMedia(String(u.mediaId), { entityType: "PRODUCT", entityId: doc._id.toString() });
+    }
     await doc.deleteOne();
     throw err;
   }
@@ -542,8 +589,12 @@ export async function deleteProductById(id: string, actorId?: string): Promise<{
   if (!doc) return null;
 
   if (doc.status === "DRAFT" || doc.status === "ARCHIVED") {
-    const attached = await Media.find({ entityType: "PRODUCT", entityId: id }).exec();
-    for (const m of attached) await detachMedia(m._id.toString());
+    const usages = await MediaUsage.find({ entityType: "PRODUCT", entityId: id })
+      .select("mediaId")
+      .lean();
+    for (const u of usages) {
+      await detachMedia(String(u.mediaId), { entityType: "PRODUCT", entityId: id });
+    }
     await doc.deleteOne();
     return { archived: false };
   }
@@ -642,16 +693,13 @@ export async function getProductList(params: ProductListParams) {
   const categoryIds = [...new Set(docs.map((d) => d.categoryId.toString()))];
   const brandIds = [...new Set(docs.map((d) => d.brandId.toString()))];
 
-  const [categories, brands, primaryImages] = await Promise.all([
+  const [categories, brands, imageMap] = await Promise.all([
     categoryIds.length ? Category.find({ _id: { $in: categoryIds } }).select("name").lean() : [],
     brandIds.length ? Brand.find({ _id: { $in: brandIds } }).select("name").lean() : [],
-    productIds.length
-      ? Media.find({ entityType: "PRODUCT", entityId: { $in: productIds }, isPrimary: true }).exec()
-      : [],
+    primaryMediaMap(productIds),
   ]);
   const categoryMap = new Map(categories.map((c) => [c._id.toString(), c.name]));
   const brandMap = new Map(brands.map((b) => [b._id.toString(), b.name]));
-  const imageMap = new Map(primaryImages.map((m) => [m.entityId!.toString(), m]));
 
   return {
     items: docs.map((d) =>
@@ -763,16 +811,13 @@ async function hydratePublicListItems(docs: PublicListDoc[]) {
   const categoryIds = [...new Set(docs.map((d) => d.categoryId.toString()))];
   const brandIds = [...new Set(docs.map((d) => d.brandId.toString()))];
 
-  const [categories, brands, primaryImages] = await Promise.all([
+  const [categories, brands, imageMap] = await Promise.all([
     categoryIds.length ? Category.find({ _id: { $in: categoryIds } }).select("name slug").lean() : [],
     brandIds.length ? Brand.find({ _id: { $in: brandIds } }).select("name slug").lean() : [],
-    productIds.length
-      ? Media.find({ entityType: "PRODUCT", entityId: { $in: productIds }, isPrimary: true }).exec()
-      : [],
+    primaryMediaMap(productIds),
   ]);
   const categoryMap = new Map(categories.map((c) => [c._id.toString(), c]));
   const brandMap = new Map(brands.map((b) => [b._id.toString(), b]));
-  const imageMap = new Map(primaryImages.map((m) => [m.entityId!.toString(), m]));
 
   return docs.map((d) => {
     const category = categoryMap.get(d.categoryId.toString());
@@ -945,7 +990,7 @@ export async function getPublicProductBySlug(slug: string) {
     category: category ? { categoryId: category._id.toString(), name: category.name, slug: category.slug } : null,
     brand: brand ? { brandId: brand._id.toString(), name: brand.name, slug: brand.slug } : null,
     images: images
-      .map((m) => toPublicImage(m, doc.name))
+      .map((ref) => toPublicImage(ref.media, doc.name))
       .filter((img): img is PublicProductImage => img !== null),
     pricing: {
       mrp: doc.pricing.mrp,

@@ -8,6 +8,7 @@ import {
   getMediaById,
   updateMediaById,
   deleteMediaById,
+  getMediaUsages,
 } from "./media.service";
 import type { UpdateMediaBody } from "./media.validation";
 
@@ -37,10 +38,23 @@ export const getMediaListHandler = asyncHandler(async (req: Request, res: Respon
     mediaType: req.query.mediaType,
     mimeType: req.query.mimeType,
     entityType: req.query.entityType,
+    minWidth: req.query.minWidth,
+    maxWidth: req.query.maxWidth,
+    minHeight: req.query.minHeight,
+    maxHeight: req.query.maxHeight,
     sort: req.query.sort,
     order: req.query.order,
   });
   res.status(200).json({ success: true, data });
+});
+
+export const getMediaUsagesHandler = asyncHandler(async (req: Request, res: Response) => {
+  const media = await getMediaById(String(req.params.id));
+  if (!media) {
+    throw new AppError("Media not found", 404);
+  }
+  const usages = await getMediaUsages(String(req.params.id));
+  res.status(200).json({ success: true, data: { usages } });
 });
 
 export const getMediaDetailHandler = asyncHandler(async (req: Request, res: Response) => {

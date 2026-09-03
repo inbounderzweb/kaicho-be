@@ -1,5 +1,5 @@
 import { env } from "../../config/env";
-import { Media } from "../../database/models";
+import { Media, MediaUsage } from "../../database/models";
 import { getStorageProvider } from "./media.storage";
 import { logMediaEvent } from "./mediaLogger";
 
@@ -21,6 +21,14 @@ export async function cleanupExpiredTemporaryMedia(): Promise<{
   let failed = 0;
 
   for (const doc of expired) {
+    // Defensive: never reclaim an asset something still references, even if
+    // its denormalised status somehow lagged behind (spec §10).
+    const stillReferenced = await MediaUsage.exists({ mediaId: doc._id });
+    if (stillReferenced) {
+      await Media.updateOne({ _id: doc._id }, { $set: { status: "ATTACHED" } });
+      continue;
+    }
+
     const keys = doc.variants
       ? [doc.variants.thumbnail.key, doc.variants.medium.key, doc.variants.optimized.key]
       : [doc.storageKey];

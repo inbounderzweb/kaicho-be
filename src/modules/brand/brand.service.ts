@@ -100,7 +100,7 @@ export async function createBrand(input: CreateBrandInput, actorId?: string) {
 
   if (input.logoMediaId) {
     try {
-      await attachMediaToEntity(input.logoMediaId, "BRAND", doc._id.toString());
+      await attachMediaToEntity(input.logoMediaId, "BRAND", doc._id.toString(), { field: "logo" });
     } catch (err) {
       // Compensating action in place of a real Mongo transaction — same
       // rationale as category.service.ts: standalone dev DB, no replica set,
@@ -150,8 +150,10 @@ export async function updateBrandById(id: string, patch: UpdateBrandInput, actor
   await doc.save();
 
   if (logoProvided && nextLogoMediaId !== previousLogoMediaId) {
-    if (nextLogoMediaId) await attachMediaToEntity(nextLogoMediaId, "BRAND", id);
-    if (previousLogoMediaId) await detachMedia(previousLogoMediaId);
+    if (nextLogoMediaId) await attachMediaToEntity(nextLogoMediaId, "BRAND", id, { field: "logo" });
+    if (previousLogoMediaId) {
+      await detachMedia(previousLogoMediaId, { entityType: "BRAND", entityId: id, field: "logo" });
+    }
   }
 
   return getBrandById(id);
@@ -175,7 +177,9 @@ export async function deleteBrandById(id: string) {
   }
 
   await doc.deleteOne();
-  if (doc.logoMediaId) await detachMedia(doc.logoMediaId.toString());
+  if (doc.logoMediaId) {
+    await detachMedia(doc.logoMediaId.toString(), { entityType: "BRAND", entityId: id });
+  }
   return true;
 }
 

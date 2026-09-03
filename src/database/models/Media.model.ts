@@ -51,6 +51,12 @@ export interface MediaDocument extends Document {
 
   pageCount?: number;
 
+  // sha256 of the processed `optimized` variant bytes (images only) — the
+  // dedupe key. Re-uploading a byte-identical source produces the same
+  // optimized output and therefore the same hash, so the second upload
+  // resolves to this existing asset instead of writing another copy.
+  contentHash?: string;
+
   altText?: string;
 
   isPrimary: boolean;
@@ -109,6 +115,8 @@ const MediaSchema = new Schema<MediaDocument>(
 
     pageCount: { type: Number },
 
+    contentHash: { type: String },
+
     altText: { type: String },
 
     isPrimary: { type: Boolean, default: false },
@@ -124,5 +132,9 @@ const MediaSchema = new Schema<MediaDocument>(
 MediaSchema.index({ status: 1, createdAt: 1 });
 MediaSchema.index({ entityType: 1, entityId: 1 });
 MediaSchema.index({ mediaType: 1, createdAt: 1 });
+// Dedupe lookup on upload (spec §17). Sparse — only images carry a hash.
+MediaSchema.index({ contentHash: 1 }, { sparse: true });
+// Dimension-range filtering in the media library (spec §6).
+MediaSchema.index({ width: 1, height: 1 });
 
 export const Media = model<MediaDocument>("Media", MediaSchema);
