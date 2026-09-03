@@ -22,6 +22,18 @@ export const env = {
   jwtSecret: required("JWT_SECRET", "change-me"),
   adminKey: required("ADMIN_KEY", "change-me-admin-key"),
 
+  // Number of HTTP worker processes to fork (see server.ts). 1 = single
+  // process (dev default). Set to the host's CPU count in production so a
+  // slow request on one worker doesn't stall the other 99 users.
+  webConcurrency: requiredInt("WEB_CONCURRENCY", 1),
+  // Mongo connection-pool size PER worker. Total sockets to the DB is
+  // roughly webConcurrency * mongoPoolSize — keep that under the cluster's
+  // connection limit (Atlas M0 ~= 500, but throttles long before that).
+  mongoPoolSize: requiredInt("MONGO_POOL_SIZE", 20),
+  // Cache-Control max-age (seconds) for public catalog GET responses. The
+  // frontend layers its own Data Cache on top; this is the shared/CDN hint.
+  publicCacheMaxAge: requiredInt("PUBLIC_CACHE_MAX_AGE", 30),
+
   jwtExpiresIn: required("JWT_EXPIRES_IN", "30d"),
 
   cookieName: required("COOKIE_NAME", "kaicho_session"),

@@ -16,6 +16,9 @@ export function errorHandler(
     console.error(err);
   }
 
+  // Never let an error response inherit a cacheable header from publicCache.
+  res.set("Cache-Control", "no-store");
+
   res.status(statusCode).json({
     success: false,
     message,

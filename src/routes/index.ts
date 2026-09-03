@@ -27,6 +27,7 @@ import adminInquiryRoutes from "../modules/inquiry/inquiry.routes";
 import inquiryPublicRoutes from "../modules/inquiry/inquiryPublic.routes";
 import adminSettingsRoutes from "../modules/settings/settings.routes";
 import settingsPublicRoutes from "../modules/settings/settingsPublic.routes";
+import { publicCache } from "../common/middleware";
 
 const router = Router();
 
@@ -63,13 +64,16 @@ router.use("/admin", adminDashboardRoutes);
 // and route surface from the /admin/* CRUD routes above, sharing the same
 // underlying service layer (see product.service.ts's "Public catalog"
 // section). Spec §3/§48/§49.
-router.use("/products", productPublicRoutes);
-router.use("/categories", categoryPublicRoutes);
-router.use("/collections", collectionPublicRoutes);
-router.use("/brands", brandPublicRoutes);
-router.use("/blogs", blogPublicRoutes);
+// `publicCache` marks the GET responses on these unauthenticated catalog
+// routes as CDN/browser-cacheable (see the middleware). Not applied to
+// /inquiries — those are POST-only form submissions, nothing to cache.
+router.use("/products", publicCache, productPublicRoutes);
+router.use("/categories", publicCache, categoryPublicRoutes);
+router.use("/collections", publicCache, collectionPublicRoutes);
+router.use("/brands", publicCache, brandPublicRoutes);
+router.use("/blogs", publicCache, blogPublicRoutes);
 router.use("/inquiries", inquiryPublicRoutes);
-router.use("/settings", settingsPublicRoutes);
+router.use("/settings", publicCache, settingsPublicRoutes);
 // Requires requireAuth per-route (see wishlist.routes.ts) — a logged-in
 // user's own wishlist, not part of the unauthenticated catalog surface
 // above, but still a "/api/*" (not "/api/admin/*") customer-facing route.
