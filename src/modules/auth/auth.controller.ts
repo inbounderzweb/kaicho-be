@@ -8,9 +8,10 @@ import * as authService from "./auth.service";
 
 export const sendOtp = asyncHandler(async (req: Request, res: Response) => {
   const { phone, countryCode } = req.body;
-  await authService.sendOtp(phone, countryCode);
+  const data = await authService.sendOtp(phone, countryCode);
   res.status(200).json({
     success: true,
+    data,
     message: "OTP sent successfully",
   });
 });

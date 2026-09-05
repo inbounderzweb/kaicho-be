@@ -74,6 +74,8 @@ export async function sendOtp(phone: string, countryCode?: string): Promise<void
 
   const message = `${otp} is your Kaicho verification code. Valid for ${env.otpExpiryMinutes} minutes.`;
   await getSmsProvider().sendSms(`${countryCode ?? env.defaultCountryCode}${phone}`, message);
+  let data:any = {otp:otp}
+  return data
 }
 
 // Best-effort: called from logout, which must succeed even if the presented
