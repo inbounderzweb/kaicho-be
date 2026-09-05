@@ -20,7 +20,7 @@ import {
   BlogCategory,
 } from "../../database/models";
 import { detectFileType, looksLikeValidPdfStructure } from "./fileSignature";
-import { getStorageProvider } from "./media.storage";
+import { getStorageProvider } from "./storage";
 import { logMediaEvent } from "./mediaLogger";
 import type { UpdateMediaBody } from "./media.validation";
 

@@ -17,7 +17,7 @@ import mongoose from "mongoose";
 import { env } from "../config/env";
 import { Media, MediaUsage, MediaEntityType } from "../database/models";
 import { MediaUsageField } from "../database/models/MediaUsage.model";
-import { getStorageProvider } from "../modules/media/media.storage";
+import { getStorageProvider } from "../modules/media/storage";
 
 const storage = getStorageProvider();
 

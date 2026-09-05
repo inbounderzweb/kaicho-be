@@ -9,7 +9,7 @@ import { connectDatabase } from "../../../database/connection";
 import { User, Media, MediaUsage } from "../../../database/models";
 import { attachMediaToEntity, detachMedia } from "../media.service";
 import { signSessionToken } from "../../auth/auth.service";
-import { getMediaRoot } from "../media.storage";
+import { getMediaRoot } from "../storage";
 import { cleanupExpiredTemporaryMedia } from "../mediaCleanup";
 
 const RUN_ID = Date.now().toString().slice(-6);

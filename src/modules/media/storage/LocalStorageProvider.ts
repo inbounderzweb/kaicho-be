@@ -1,21 +1,13 @@
 import fs from "fs/promises";
 import path from "path";
-import { env } from "../../config/env";
-
-export interface StorageProvider {
-  upload(key: string, buffer: Buffer): Promise<void>;
-  read(key: string): Promise<Buffer>;
-  delete(key: string): Promise<void>;
-  exists(key: string): Promise<boolean>;
-  getUrl(key: string): string;
-}
+import { env } from "../../../config/env";
+import type { StorageProvider } from "./types";
 
 const MEDIA_ROOT = path.resolve(process.cwd(), env.mediaBasePath);
 const PUBLIC_MOUNT = "/uploads/media";
 
-// Keys are always generated server-side (uuid + date, see media.service.ts) —
-// never taken from client input — so this is defense in depth, not the
-// primary guarantee against path traversal.
+// Defense in depth against path traversal — keys are already server-generated
+// and safe (see types.ts), this just guards against a future regression.
 function resolveSafePath(key: string): string {
   const full = path.resolve(MEDIA_ROOT, key);
   if (!full.startsWith(MEDIA_ROOT + path.sep)) {
@@ -57,10 +49,6 @@ export class LocalStorageProvider implements StorageProvider {
   getUrl(key: string): string {
     return `${PUBLIC_MOUNT}/${key}`;
   }
-}
-
-export function getStorageProvider(): StorageProvider {
-  return new LocalStorageProvider();
 }
 
 export function getMediaRoot(): string {

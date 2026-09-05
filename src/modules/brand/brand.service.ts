@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
 import { Brand, BrandDocument, Media, MediaDocument, Product } from "../../database/models";
 import { getMediaDocById, attachMediaToEntity, detachMedia } from "../media/media.service";
-import { getStorageProvider } from "../media/media.storage";
+import { getStorageProvider } from "../media/storage";
 import { slugify } from "../../common/utils/slugify";
 import type { CreateBrandInput, UpdateBrandInput } from "./brand.validation";
 

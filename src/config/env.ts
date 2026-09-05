@@ -97,8 +97,20 @@ export const env = {
   smsProvider: required("SMS_PROVIDER", "console"),
   defaultCountryCode: required("DEFAULT_COUNTRY_CODE", "+91"),
 
-  storageProvider: required("STORAGE_PROVIDER", "local"),
+  // "local" writes to disk under mediaBasePath, served by app.ts's static
+  // mount. "cloudinary" ships the same bytes to a Cloudinary bucket instead —
+  // see modules/media/storage/CloudinaryStorageProvider.ts. Nothing else in
+  // the app needs to change when switching; every consumer goes through
+  // getStorageProvider() (modules/media/storage/index.ts).
+  storageProvider: required("STORAGE_PROVIDER", "local") as "local" | "cloudinary",
   mediaBasePath: required("MEDIA_BASE_PATH", "uploads/media"),
+  // Only required when storageProvider is "cloudinary" (validated there, not
+  // here, so "local" dev/test setups never need these set). Get these from
+  // the Cloudinary dashboard (Settings → API Keys) — never commit real
+  // values, only placeholders belong in .env.example.
+  cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME || undefined,
+  cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || undefined,
+  cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || undefined,
   maxImageFileSizeMb: requiredInt("MAX_IMAGE_FILE_SIZE_MB", 10),
   maxPdfFileSizeMb: requiredInt("MAX_PDF_FILE_SIZE_MB", 20),
   maxMediaFilesPerRequest: requiredInt("MAX_MEDIA_FILES_PER_REQUEST", 10),

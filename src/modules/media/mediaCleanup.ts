@@ -1,6 +1,6 @@
 import { env } from "../../config/env";
 import { Media, MediaUsage } from "../../database/models";
-import { getStorageProvider } from "./media.storage";
+import { getStorageProvider } from "./storage";
 import { logMediaEvent } from "./mediaLogger";
 
 const storage = getStorageProvider();

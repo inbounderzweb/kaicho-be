@@ -11,7 +11,7 @@ import {
   MediaUsage,
 } from "../../database/models";
 import { attachMediaToEntity, detachMedia } from "../media/media.service";
-import { getStorageProvider } from "../media/media.storage";
+import { getStorageProvider } from "../media/storage";
 import { slugify } from "../../common/utils/slugify";
 import type { CreateProductInput, UpdateProductInput } from "./product.validation";
 

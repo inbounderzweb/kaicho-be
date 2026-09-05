@@ -7,7 +7,7 @@ import routes from "./routes";
 import adminRoutes from "./modules/admin/admin.routes";
 import { notFound, errorHandler } from "./common/middleware";
 import { env } from "./config/env";
-import { getMediaRoot } from "./modules/media/media.storage";
+import { getMediaRoot } from "./modules/media/storage";
 
 const app: Application = express();
 
@@ -54,11 +54,15 @@ app.use(adminRoutes);
 app.use(express.static(path.resolve(__dirname, "../public"), { maxAge: "1h" }));
 // Media keys are content-addressed UUIDs that never change once written, so
 // they can be cached hard and forever — a repeat image view then costs zero
-// bytes and never reaches Node.
-app.use(
-  "/uploads/media",
-  express.static(getMediaRoot(), { maxAge: "365d", immutable: true })
-);
+// bytes and never reaches Node. Only relevant for local disk storage — a
+// cloud provider (Cloudinary etc.) serves files from its own CDN and needs
+// no route here at all.
+if (env.storageProvider === "local") {
+  app.use(
+    "/uploads/media",
+    express.static(getMediaRoot(), { maxAge: "365d", immutable: true })
+  );
+}
 
 app.use("/api", routes);
 

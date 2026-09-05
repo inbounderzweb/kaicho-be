@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
 import { Media, MediaDocument, MediaEntityType, MediaUsage, MediaUsageField } from "../../database/models";
 import { getMediaDocById, attachMediaToEntity, detachMedia } from "../media/media.service";
-import { getStorageProvider } from "../media/media.storage";
+import { getStorageProvider } from "../media/storage";
 
 const storage = getStorageProvider();
 

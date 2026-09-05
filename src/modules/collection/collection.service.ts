@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
 import { Collection, CollectionDocument, Media, Product } from "../../database/models";
-import { getStorageProvider } from "../media/media.storage";
+import { getStorageProvider } from "../media/storage";
 import { getMediaDocById, attachMediaToEntity, detachMedia } from "../media/media.service";
 import { slugify } from "../../common/utils/slugify";
 import { getProductSummariesByIds } from "../product/product.service";

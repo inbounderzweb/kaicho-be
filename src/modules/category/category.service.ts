@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
 import { Category, CategoryDocument, Media, MediaDocument } from "../../database/models";
 import { getMediaDocById, attachMediaToEntity, detachMedia } from "../media/media.service";
-import { getStorageProvider } from "../media/media.storage";
+import { getStorageProvider } from "../media/storage";
 import { countProductsInCategory } from "../product/product.service";
 import { slugify } from "./slugify";
 import type { CreateCategoryInput, UpdateCategoryInput } from "./category.validation";
