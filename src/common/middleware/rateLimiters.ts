@@ -44,6 +44,21 @@ export const inquirySubmitLimiter = rateLimit({
   },
 });
 
+// Public location proxy (/api/location/*). Per-IP — an anonymous visitor has
+// no identity to key on — and generous, since detect + a few search
+// keystrokes + a serviceability check all count. Its real job is to stop a
+// script from turning our Nominatim proxy into an open relay.
+export const locationLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitLocationMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many location requests from this device. Please try again shortly.",
+  },
+});
+
 export const mediaUploadLimiter = rateLimit({
   windowMs,
   max: env.rateLimitMediaUploadMax,

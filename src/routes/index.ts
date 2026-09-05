@@ -27,6 +27,7 @@ import adminInquiryRoutes from "../modules/inquiry/inquiry.routes";
 import inquiryPublicRoutes from "../modules/inquiry/inquiryPublic.routes";
 import adminSettingsRoutes from "../modules/settings/settings.routes";
 import settingsPublicRoutes from "../modules/settings/settingsPublic.routes";
+import locationRoutes from "../modules/location/location.routes";
 import { publicCache } from "../common/middleware";
 
 const router = Router();
@@ -74,6 +75,10 @@ router.use("/brands", publicCache, brandPublicRoutes);
 router.use("/blogs", publicCache, blogPublicRoutes);
 router.use("/inquiries", inquiryPublicRoutes);
 router.use("/settings", publicCache, settingsPublicRoutes);
+// Storefront "detect / choose your delivery area" geocoding proxy. Applies
+// its own per-route cache headers (search is cacheable, reverse/ip are not),
+// so no publicCache wrapper here.
+router.use("/location", locationRoutes);
 // Requires requireAuth per-route (see wishlist.routes.ts) — a logged-in
 // user's own wishlist, not part of the unauthenticated catalog surface
 // above, but still a "/api/*" (not "/api/admin/*") customer-facing route.

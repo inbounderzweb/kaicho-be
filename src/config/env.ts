@@ -69,6 +69,30 @@ export const env = {
   rateLimitOtpMax: requiredInt("RATE_LIMIT_OTP_MAX", 10),
   // Public inquiry-form submissions, per IP, per RATE_LIMIT_WINDOW_MINUTES.
   rateLimitInquiryMax: requiredInt("RATE_LIMIT_INQUIRY_MAX", 10),
+  // Public /api/location/* calls, per IP, per RATE_LIMIT_WINDOW_MINUTES.
+  // Generous — one visitor legitimately fires several (detect + a few search
+  // keystrokes + serviceability) — but caps a script hammering the proxy.
+  rateLimitLocationMax: requiredInt("RATE_LIMIT_LOCATION_MAX", 120),
+
+  // --- Location / geocoding -------------------------------------------------
+  // The storefront's "detect / choose your delivery area" feature calls
+  // /api/location/* only; this backend module is the sole thing that talks to
+  // a geocoding provider, so a key never reaches the browser and coordinates
+  // never appear in a third-party URL/log via the client.
+  locationProvider: required("LOCATION_PROVIDER", "nominatim") as
+    | "nominatim"
+    | "google"
+    | "mapbox",
+  nominatimBaseUrl: required("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"),
+  // OSM's usage policy requires an identifying User-Agent on every request.
+  nominatimUserAgent: required("NOMINATIM_USER_AGENT", "KaichoFoods/1.0 (+https://kaicho.in)"),
+  // Keyless IP-geolocation service for the approximate fallback.
+  ipGeoBaseUrl: required("IP_GEO_BASE_URL", "https://ipapi.co"),
+  // In-process cache TTL for reverse/search/serviceability results.
+  locationCacheTtlMinutes: requiredInt("LOCATION_CACHE_TTL_MINUTES", 60),
+  // Only needed if LOCATION_PROVIDER is switched to google/mapbox later.
+  googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || undefined,
+  mapboxToken: process.env.MAPBOX_TOKEN || undefined,
 
   smsProvider: required("SMS_PROVIDER", "console"),
   defaultCountryCode: required("DEFAULT_COUNTRY_CODE", "+91"),
