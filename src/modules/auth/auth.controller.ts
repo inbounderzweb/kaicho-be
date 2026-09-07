@@ -8,10 +8,11 @@ import * as authService from "./auth.service";
 
 export const sendOtp = asyncHandler(async (req: Request, res: Response) => {
   const { phone, countryCode } = req.body;
-  const data = await authService.sendOtp(phone, countryCode);
+  await authService.sendOtp(phone, countryCode);
   res.status(200).json({
     success: true,
-    data,
+    // Deliberately no OTP in the body — it goes out over SMS only.
+    data: { sent: true },
     message: "OTP sent successfully",
   });
 });
@@ -27,9 +28,21 @@ export const verifyOtp = asyncHandler(async (req: Request, res: Response) => {
   });
 });
 
+export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
+  const { credential } = req.body;
+  const { token, user, requiresName } = await authService.loginWithGoogle(credential);
+  setSessionCookie(res, token);
+  res.status(200).json({
+    success: true,
+    message: "Logged in successfully",
+    data: { user, requiresName },
+  });
+});
+
 export const updateMe = asyncHandler(async (req: Request, res: Response) => {
-  const { name } = req.body;
-  const user = await authService.updateName(req.userId!, name);
+  // req.body is already narrowed to { name?, phone?, countryCode? } by
+  // validateBody(updateMeSchema).
+  const user = await authService.updateProfile(req.userId!, req.body);
   res.status(200).json({
     success: true,
     message: "Profile updated",

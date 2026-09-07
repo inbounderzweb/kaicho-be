@@ -26,8 +26,12 @@ function authCookie(user: InstanceType<typeof User>) {
 
 const VALID_ADDRESS = {
   label: "Home",
-  line1: "12 Marine Drive",
-  line2: "Near the pier",
+  receiverName: "Asha Menon",
+  receiverPhone: "9876543210",
+  houseNo: "12",
+  building: "Marine Heights",
+  area: "Marine Drive",
+  landmark: "Near the pier",
   city: "Mumbai",
   state: "Maharashtra",
   pincode: "400020",
@@ -67,7 +71,13 @@ describe("Address API — CRUD", () => {
 
     const created = await addAddress(user);
     expect(created.status).toBe(201);
-    expect(created.body.data.address.line1).toBe(VALID_ADDRESS.line1);
+    expect(created.body.data.address.houseNo).toBe("12");
+    expect(created.body.data.address.area).toBe("Marine Drive");
+    expect(created.body.data.address.receiverName).toBe("Asha Menon");
+    expect(created.body.data.address.receiverPhone).toBe("9876543210");
+    // line1 / line2 are derived from the structured fields.
+    expect(created.body.data.address.line1).toBe("12, Marine Heights");
+    expect(created.body.data.address.line2).toBe("Marine Drive, Near the pier");
 
     const list = await request(app).get("/api/addresses").set("Cookie", authCookie(user));
     expect(list.body.data.total).toBe(1);
@@ -100,7 +110,33 @@ describe("Address API — CRUD", () => {
     expect(res.body.data.address.city).toBe("Pune");
     expect(res.body.data.address.label).toBe("Office");
     // Untouched fields survive a partial patch.
-    expect(res.body.data.address.line1).toBe(VALID_ADDRESS.line1);
+    expect(res.body.data.address.houseNo).toBe("12");
+    expect(res.body.data.address.line1).toBe("12, Marine Heights");
+  });
+
+  it("re-derives line1/line2 when a structured field is patched", async () => {
+    const user = await makeUser();
+    const created = await addAddress(user);
+    const addressId = created.body.data.address.addressId;
+
+    const res = await request(app)
+      .patch(`/api/addresses/${addressId}`)
+      .set("Cookie", authCookie(user))
+      .send({ houseNo: "5B", building: "" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.address.houseNo).toBe("5B");
+    expect(res.body.data.address.line1).toBe("5B");
+    expect(res.body.data.address.line2).toBe("Marine Drive, Near the pier");
+  });
+
+  it("rejects a create missing the receiver phone with 400", async () => {
+    const user = await makeUser();
+    const res = await request(app)
+      .post("/api/addresses")
+      .set("Cookie", authCookie(user))
+      .send({ ...VALID_ADDRESS, receiverPhone: undefined });
+    expect(res.status).toBe(400);
   });
 
   it("404s updating an address that does not exist", async () => {

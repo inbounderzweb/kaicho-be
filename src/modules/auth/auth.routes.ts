@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { sendOtp, verifyOtp, getMe, logout, updateMe } from "./auth.controller";
-import { sendOtpSchema, verifyOtpSchema, updateMeSchema } from "./auth.validation";
+import { sendOtp, verifyOtp, googleAuth, getMe, logout, updateMe } from "./auth.controller";
+import { sendOtpSchema, verifyOtpSchema, updateMeSchema, googleAuthSchema } from "./auth.validation";
 import {
   validateBody,
   otpIpLimiter,
@@ -25,6 +25,10 @@ router.post(
   otpPhoneLimiter,
   verifyOtp
 );
+
+// Same per-IP limiter as the OTP routes — a login endpoint that mints a
+// session, so it gets the same brute-force ceiling.
+router.post("/google", otpIpLimiter, validateBody(googleAuthSchema), googleAuth);
 
 router.get("/me", requireAuth, getMe);
 

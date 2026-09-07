@@ -123,11 +123,19 @@ export interface OrderPricing {
 
 export interface OrderShippingAddress {
   label?: string;
-  line1: string;
-  line2?: string;
+  receiverName?: string;
+  receiverPhone?: string;
+  houseNo?: string;
+  building?: string;
+  area?: string;
+  landmark?: string;
   city: string;
   state: string;
   pincode: string;
+  // Legacy one-liners — always present (derived), still the only address
+  // fields on orders placed before the structured fields existed.
+  line1: string;
+  line2?: string;
 }
 
 export interface OrderPayment {
@@ -220,11 +228,17 @@ const OrderPricingSchema = new Schema<OrderPricing>(
 const OrderShippingAddressSchema = new Schema<OrderShippingAddress>(
   {
     label: { type: String },
-    line1: { type: String, required: true },
-    line2: { type: String },
+    receiverName: { type: String },
+    receiverPhone: { type: String },
+    houseNo: { type: String },
+    building: { type: String },
+    area: { type: String },
+    landmark: { type: String },
     city: { type: String, required: true },
     state: { type: String, required: true },
     pincode: { type: String, required: true },
+    line1: { type: String, required: true },
+    line2: { type: String },
   },
   { _id: false }
 );

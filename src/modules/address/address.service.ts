@@ -13,14 +13,37 @@ function isValidObjectId(id: string): boolean {
   return mongoose.isValidObjectId(id);
 }
 
+// `line1` / `line2` are compatibility fields — recomputed from the structured
+// inputs on every write so anything still reading them (historical order
+// snapshots, older clients) stays correct without being a second source of
+// truth the form has to keep in sync.
+export function deriveAddressLines(parts: {
+  houseNo?: string;
+  building?: string;
+  area?: string;
+  landmark?: string;
+}): { line1: string; line2?: string } {
+  const line1 = [parts.houseNo, parts.building].map((s) => s?.trim()).filter(Boolean).join(", ");
+  const line2 =
+    [parts.area, parts.landmark].map((s) => s?.trim()).filter(Boolean).join(", ") || undefined;
+  return { line1, line2 };
+}
+
 export interface AddressDto {
   addressId: string;
   label?: string;
-  line1: string;
-  line2?: string;
+  receiverName?: string;
+  receiverPhone?: string;
+  houseNo?: string;
+  building?: string;
+  area?: string;
+  landmark?: string;
   city: string;
   state: string;
   pincode: string;
+  /** Derived, read-only. Kept so older consumers keep rendering. */
+  line1: string;
+  line2?: string;
   isDefault: boolean;
 }
 
@@ -28,11 +51,17 @@ function toDto(address: Address): AddressDto {
   return {
     addressId: address._id!.toString(),
     label: address.label,
-    line1: address.line1,
-    line2: address.line2,
+    receiverName: address.receiverName,
+    receiverPhone: address.receiverPhone,
+    houseNo: address.houseNo,
+    building: address.building,
+    area: address.area,
+    landmark: address.landmark,
     city: address.city,
     state: address.state,
     pincode: address.pincode,
+    line1: address.line1,
+    line2: address.line2,
     isDefault: address.isDefault ?? false,
   };
 }
@@ -62,35 +91,28 @@ export async function createAddress(userId: string, input: CreateAddressInput): 
     await User.updateOne({ _id: userId }, { $set: { "addresses.$[].isDefault": false } });
   }
 
+  const { line1, line2 } = deriveAddressLines(input);
   const addressId = new mongoose.Types.ObjectId();
-  await User.updateOne(
-    { _id: userId },
-    {
-      $push: {
-        addresses: {
-          _id: addressId,
-          label: input.label,
-          line1: input.line1,
-          line2: input.line2,
-          city: input.city,
-          state: input.state,
-          pincode: input.pincode,
-          isDefault: shouldBeDefault,
-        },
-      },
-    }
-  );
-
-  return {
-    addressId: addressId.toString(),
+  const subdoc = {
+    _id: addressId,
     label: input.label,
-    line1: input.line1,
-    line2: input.line2,
+    receiverName: input.receiverName,
+    receiverPhone: input.receiverPhone,
+    houseNo: input.houseNo,
+    building: input.building,
+    area: input.area,
+    landmark: input.landmark,
     city: input.city,
     state: input.state,
     pincode: input.pincode,
+    line1,
+    line2,
     isDefault: shouldBeDefault,
   };
+
+  await User.updateOne({ _id: userId }, { $push: { addresses: subdoc } });
+
+  return toDto(subdoc as unknown as Address);
 }
 
 export async function updateAddress(
@@ -113,10 +135,37 @@ export async function updateAddress(
   }
 
   const $set: Record<string, unknown> = {};
-  for (const key of ["label", "line1", "line2", "city", "state", "pincode", "isDefault"] as const) {
+  for (const key of [
+    "label",
+    "receiverName",
+    "receiverPhone",
+    "houseNo",
+    "building",
+    "area",
+    "landmark",
+    "city",
+    "state",
+    "pincode",
+    "isDefault",
+  ] as const) {
     if (patch[key] !== undefined) {
       $set[`addresses.$.${key}`] = patch[key];
     }
+  }
+
+  // If any component of the derived one-liners changed, recompute both from
+  // the patched value merged over the stored one.
+  const lineParts = ["houseNo", "building", "area", "landmark"] as const;
+  if (lineParts.some((k) => patch[k] !== undefined)) {
+    const current = await getAddressOrThrow(userId, addressId);
+    const { line1, line2 } = deriveAddressLines({
+      houseNo: patch.houseNo ?? current.houseNo,
+      building: patch.building ?? current.building,
+      area: patch.area ?? current.area,
+      landmark: patch.landmark ?? current.landmark,
+    });
+    $set["addresses.$.line1"] = line1;
+    $set["addresses.$.line2"] = line2 ?? "";
   }
 
   const result = await User.updateOne({ _id: userId, "addresses._id": addressId }, { $set });

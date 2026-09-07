@@ -2,6 +2,7 @@ import express, { Application } from "express";
 import cors from "cors";
 import compression from "compression";
 import cookieParser from "cookie-parser";
+import morgan from "morgan";
 import path from "path";
 import routes from "./routes";
 import adminRoutes from "./modules/admin/admin.routes";
@@ -13,6 +14,11 @@ const app: Application = express();
 
 // No value to clients, a small header on every response.
 app.disable("x-powered-by");
+// Log every request (method, path, status, response time) so it's obvious
+// which endpoint is actually being hit — "dev" locally for a readable
+// colored one-liner, "combined" (Apache-style, includes referrer/UA) once
+// deployed where logs are typically shipped/grepped rather than eyeballed.
+app.use(morgan(env.nodeEnv === "production" ? "combined" : "dev"));
 // gzip/brotli every response above ~1KB — JSON catalog payloads compress
 // ~5-10x, which is the difference between fast and slow over a tunnel or a
 // mobile connection.

@@ -97,6 +97,14 @@ export const env = {
   smsProvider: required("SMS_PROVIDER", "console"),
   defaultCountryCode: required("DEFAULT_COUNTRY_CODE", "+91"),
 
+  // Google Sign-In (OAuth 2.0 Web client ID from the Google Cloud console —
+  // "APIs & Services → Credentials"). The SAME id must be set on the
+  // frontend as NEXT_PUBLIC_GOOGLE_CLIENT_ID. No client secret is used: the
+  // /api/auth/google endpoint verifies the ID token the browser sends
+  // against Google's public keys and checks its audience equals this id.
+  // Left undefined -> the endpoint responds 501 (feature not configured).
+  googleClientId: process.env.GOOGLE_CLIENT_ID || undefined,
+
   // "local" writes to disk under mediaBasePath, served by app.ts's static
   // mount. "cloudinary" ships the same bytes to a Cloudinary bucket instead —
   // see modules/media/storage/CloudinaryStorageProvider.ts. Nothing else in

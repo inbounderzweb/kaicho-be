@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { OAuth2Client } from "google-auth-library";
 import { env } from "../../config/env";
 import { AppError } from "../../common/errors";
 import { generateOtp, hashOtp, compareOtp } from "../../common/utils/otp";
@@ -9,12 +10,13 @@ const PURPOSE = "login";
 
 export interface AuthUserDto {
   id: string;
-  phone: string;
+  phone?: string;
   countryCode: string;
   phoneVerified: boolean;
   firstName?: string;
   lastName?: string;
   email?: string;
+  emailVerified: boolean;
   avatar?: string;
   role: UserDocument["role"];
   createdAt: Date;
@@ -30,6 +32,7 @@ export function toUserDto(user: UserDocument): AuthUserDto {
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
+    emailVerified: user.emailVerified,
     avatar: user.avatar,
     role: user.role,
     createdAt: user.createdAt,
@@ -74,8 +77,6 @@ export async function sendOtp(phone: string, countryCode?: string): Promise<void
 
   const message = `${otp} is your Kaicho verification code. Valid for ${env.otpExpiryMinutes} minutes.`;
   await getSmsProvider().sendSms(`${countryCode ?? env.defaultCountryCode}${phone}`, message);
-  let data:any = {otp:otp}
-  return data
 }
 
 // Best-effort: called from logout, which must succeed even if the presented
@@ -165,15 +166,139 @@ export async function verifyOtp(
   return { token, user: toUserDto(user), requiresName: !user.firstName };
 }
 
-export async function updateName(userId: string, name: string): Promise<AuthUserDto> {
-  const [firstName, ...rest] = name.split(/\s+/).filter(Boolean);
-  const lastName = rest.join(" ");
+// --- Google Sign-In --------------------------------------------------------
 
-  const user = await User.findByIdAndUpdate(
-    userId,
-    { $set: { firstName, lastName: lastName || undefined } },
-    { returnDocument: "after" }
-  ).exec();
+// Stateless verifier — no secret. verifyIdToken() checks the token's
+// signature against Google's published keys, that `aud` equals our client id,
+// that `iss` is accounts.google.com, and that it hasn't expired. The keys are
+// fetched and cached inside the client.
+const googleClient = new OAuth2Client();
+
+interface GoogleProfile {
+  sub: string;
+  email?: string;
+  emailVerified: boolean;
+  firstName?: string;
+  lastName?: string;
+  picture?: string;
+}
+
+async function verifyGoogleCredential(credential: string): Promise<GoogleProfile> {
+  if (!env.googleClientId) {
+    throw new AppError("Google sign-in is not configured on this server.", 501);
+  }
+
+  let payload;
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: env.googleClientId,
+    });
+    payload = ticket.getPayload();
+  } catch {
+    throw new AppError("Could not verify your Google sign-in. Please try again.", 401);
+  }
+
+  if (!payload?.sub) {
+    throw new AppError("Could not verify your Google sign-in. Please try again.", 401);
+  }
+
+  return {
+    sub: payload.sub,
+    email: payload.email?.toLowerCase(),
+    emailVerified: payload.email_verified === true,
+    firstName: payload.given_name,
+    lastName: payload.family_name,
+    picture: payload.picture,
+  };
+}
+
+export async function loginWithGoogle(credential: string): Promise<VerifyOtpResult> {
+  const profile = await verifyGoogleCredential(credential);
+
+  if (!profile.email || !profile.emailVerified) {
+    throw new AppError("Your Google account has no verified email address.", 400);
+  }
+
+  // Match on the Google user id first; fall back to an existing account with
+  // the same email (an OTP user adding Google as a second way in) — safe
+  // because Google has just told us the email is verified.
+  let user = await User.findOne({ googleId: profile.sub }).exec();
+  if (!user) {
+    user = await User.findOne({ email: profile.email }).exec();
+  }
+
+  if (user) {
+    if (!user.googleId) user.googleId = profile.sub;
+    if (!user.email) user.email = profile.email;
+    user.emailVerified = true;
+    if (!user.firstName && profile.firstName) user.firstName = profile.firstName;
+    if (!user.lastName && profile.lastName) user.lastName = profile.lastName;
+    if (!user.avatar && profile.picture) user.avatar = profile.picture;
+    user.lastLoginAt = new Date();
+    await user.save();
+  } else {
+    user = await User.create({
+      googleId: profile.sub,
+      email: profile.email,
+      emailVerified: true,
+      countryCode: env.defaultCountryCode,
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+      avatar: profile.picture,
+      lastLoginAt: new Date(),
+    });
+  }
+
+  const token = signSessionToken(user);
+  return { token, user: toUserDto(user), requiresName: !user.firstName };
+}
+
+export interface UpdateProfileInput {
+  name?: string;
+  phone?: string;
+  countryCode?: string;
+}
+
+export async function updateProfile(
+  userId: string,
+  input: UpdateProfileInput
+): Promise<AuthUserDto> {
+  const set: Record<string, unknown> = {};
+
+  if (input.name !== undefined) {
+    const [firstName, ...rest] = input.name.split(/\s+/).filter(Boolean);
+    set.firstName = firstName;
+    set.lastName = rest.join(" ") || undefined;
+  }
+
+  if (input.phone !== undefined) {
+    // Belt: reject an obvious clash up front with a clear message. Braces:
+    // the sparse-unique index on `phone` is the real guard against a race —
+    // caught as 11000 below.
+    const clash = await User.findOne({ phone: input.phone, _id: { $ne: userId } })
+      .select("_id")
+      .lean();
+    if (clash) {
+      throw new AppError("That mobile number is already linked to another account.", 409);
+    }
+    set.phone = input.phone;
+    if (input.countryCode) set.countryCode = input.countryCode;
+  }
+
+  let user: UserDocument | null;
+  try {
+    user = await User.findByIdAndUpdate(
+      userId,
+      { $set: set },
+      { returnDocument: "after" }
+    ).exec();
+  } catch (err) {
+    if ((err as { code?: number }).code === 11000) {
+      throw new AppError("That mobile number is already linked to another account.", 409);
+    }
+    throw err;
+  }
 
   if (!user) {
     throw new AppError("Not authenticated", 401);

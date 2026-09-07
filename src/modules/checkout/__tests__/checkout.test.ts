@@ -68,7 +68,7 @@ async function makeAddress(user: InstanceType<typeof User>): Promise<string> {
   const res = await request(app)
     .post("/api/addresses")
     .set("Cookie", authCookie(user))
-    .send({ label: "Home", line1: "12 Marine Drive", city: "Mumbai", state: "Maharashtra", pincode: "400020" });
+    .send({ label: "Home", receiverName: "Asha Menon", receiverPhone: "9876543210", houseNo: "12", area: "Marine Drive", city: "Mumbai", state: "Maharashtra", pincode: "400020" });
   return res.body.data.address.addressId;
 }
 

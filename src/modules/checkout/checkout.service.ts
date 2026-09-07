@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
-import { Product, Order, OrderDocument, OrderItem } from "../../database/models";
+import { Product, Order, OrderDocument, OrderItem, User } from "../../database/models";
 import { computeDiscount, getPrimaryImageUrlMap } from "../product/product.service";
 import { getAddressOrThrow } from "../address/address.service";
 import { createOrderWithUniqueNumber, toOrderDto } from "../order/order.service";
@@ -202,6 +202,14 @@ export async function createCheckout(
     };
   }
 
+  // A reachable mobile number is mandatory to place an order — deliveries and
+  // order updates depend on it. Google-sign-in accounts start without one;
+  // the checkout page makes them add it first, and this is the enforcement.
+  const buyer = await User.findById(userId).select("phone").lean();
+  if (!buyer?.phone) {
+    throw new AppError("Add a mobile number to your account before checking out.", 400);
+  }
+
   const address = await getAddressOrThrow(userId, input.addressId);
 
   const products = await loadProducts(input.items);
@@ -265,11 +273,17 @@ export async function createCheckout(
         pricing,
         shippingAddress: {
           label: address.label,
-          line1: address.line1,
-          line2: address.line2,
+          receiverName: address.receiverName,
+          receiverPhone: address.receiverPhone,
+          houseNo: address.houseNo,
+          building: address.building,
+          area: address.area,
+          landmark: address.landmark,
           city: address.city,
           state: address.state,
           pincode: address.pincode,
+          line1: address.line1,
+          line2: address.line2,
         },
         status,
         paymentMethod: input.paymentMethod,

@@ -6,6 +6,8 @@ import { connectDatabase } from "./database/connection";
 import { cleanupExpiredTemporaryMedia } from "./modules/media/mediaCleanup";
 import { cancelStalePendingOrders } from "./modules/order/orderCleanup";
 import { publishDueScheduledBlogs } from "./modules/blog/blogScheduler";
+import { ensureUserAuthIndexes } from "./modules/auth/auth.indexes";
+import { backfillStructuredAddresses } from "./modules/address/address.migration";
 
 const MEDIA_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 // More frequent than the media sweep because what's being held is stock, not
@@ -54,6 +56,12 @@ async function bootstrap() {
   // Single-process mode (dev default, or WEB_CONCURRENCY=1).
   if (workers === 1) {
     await startHttpServer();
+    await ensureUserAuthIndexes().catch((err) => {
+      console.error("[auth] index reconciliation failed:", err);
+    });
+    await backfillStructuredAddresses().catch((err) => {
+      console.error("[address] structured-field backfill failed:", err);
+    });
     startBackgroundJobs();
     console.log(`Environment: ${env.nodeEnv}`);
     return;
@@ -64,6 +72,12 @@ async function bootstrap() {
   if (cluster.isPrimary) {
     console.log(`Primary ${process.pid} starting ${workers} workers (env: ${env.nodeEnv})`);
     await connectDatabase();
+    await ensureUserAuthIndexes().catch((err) => {
+      console.error("[auth] index reconciliation failed:", err);
+    });
+    await backfillStructuredAddresses().catch((err) => {
+      console.error("[address] structured-field backfill failed:", err);
+    });
     startBackgroundJobs();
     for (let i = 0; i < workers; i++) cluster.fork();
     cluster.on("exit", (worker, code) => {
