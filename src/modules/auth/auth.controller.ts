@@ -67,6 +67,9 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
   clearSessionCookie(res);
   res.status(200).json({
     success: true,
+    // The frontend's apiFetch rejects a 2xx whose body has no `data`, so
+    // every endpoint returns one even when there's nothing to send back.
+    data: { loggedOut: true },
     message: "Logged out successfully",
   });
 });
