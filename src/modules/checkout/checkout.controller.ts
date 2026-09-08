@@ -5,7 +5,7 @@ import { previewCheckout, createCheckout } from "./checkout.service";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
 
 export const previewCheckoutHandler = asyncHandler(async (req: Request, res: Response) => {
-  const data = await previewCheckout(req.body as CheckoutPreviewInput);
+  const data = await previewCheckout(req.userId!, req.body as CheckoutPreviewInput);
   res.status(200).json({ success: true, data });
 });
 

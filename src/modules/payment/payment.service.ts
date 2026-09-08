@@ -2,6 +2,7 @@ import { AppError } from "../../common/errors";
 import { Order, OrderDocument } from "../../database/models";
 import { verifyPaymentSignature, verifyWebhookSignature } from "../../common/payments/razorpay";
 import { restoreStockForOrder, toOrderDto } from "../order/order.service";
+import { releaseCouponForOrder } from "../coupon/coupon.service";
 import type { VerifyPaymentInput } from "./payment.validation";
 
 // Two independent paths can mark an order paid: the browser handback
@@ -113,6 +114,7 @@ export async function handleWebhookEvent(body: RazorpayWebhookPayload): Promise<
       doc.paymentStatus = "FAILED";
       if (doc.status === "PENDING_PAYMENT") {
         await restoreStockForOrder(doc);
+        await releaseCouponForOrder(doc);
         doc.status = "CANCELLED";
         doc.cancelReason = "Payment failed";
         doc.statusHistory.push({ status: "CANCELLED", at: new Date(), note: "Payment failed" });

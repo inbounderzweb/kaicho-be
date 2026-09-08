@@ -16,6 +16,8 @@ import brandPublicRoutes from "../modules/brand/brandPublic.routes";
 import wishlistRoutes from "../modules/wishlist/wishlist.routes";
 import addressRoutes from "../modules/address/address.routes";
 import checkoutRoutes from "../modules/checkout/checkout.routes";
+import couponRoutes from "../modules/coupon/coupon.routes";
+import adminCouponRoutes from "../modules/coupon/adminCoupon.routes";
 import orderRoutes from "../modules/order/order.routes";
 import adminOrderRoutes from "../modules/order/adminOrder.routes";
 import paymentRoutes from "../modules/payment/payment.routes";
@@ -59,6 +61,9 @@ router.use("/admin/inquiries", adminInquiryRoutes);
 // Same ordering rule as the admin routers above — mounted before the generic
 // "/admin" dashboard router so it wins the match.
 router.use("/admin/settings", adminSettingsRoutes);
+// Same ordering rule as the admin routers above — mounted before the generic
+// "/admin" dashboard router so it wins the match.
+router.use("/admin/coupons", adminCouponRoutes);
 router.use("/admin", adminDashboardRoutes);
 
 // Public, unauthenticated customer-facing catalog routes — separate DTOs
@@ -89,6 +94,10 @@ router.use("/wishlist", wishlistRoutes);
 // authenticated by HMAC signature instead of a session cookie.
 router.use("/addresses", addressRoutes);
 router.use("/checkout", checkoutRoutes);
+// Coupon validation (POST /coupons/validate) — logged-in customers only,
+// applies requireAuth itself. Admin coupon CRUD is a separate router under
+// /admin/coupons.
+router.use("/coupons", couponRoutes);
 router.use("/orders", orderRoutes);
 router.use("/payments", paymentRoutes);
 

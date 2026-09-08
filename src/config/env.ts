@@ -144,6 +144,11 @@ export const env = {
 
   rateLimitCheckoutMax: requiredInt("RATE_LIMIT_CHECKOUT_MAX", 20),
 
+  // Coupon-code validation attempts, per logged-in user, per
+  // RATE_LIMIT_WINDOW_MINUTES. Tighter than checkout: this is the endpoint a
+  // script would hammer to enumerate valid codes.
+  rateLimitCouponValidateMax: requiredInt("RATE_LIMIT_COUPON_VALIDATE_MAX", 20),
+
   // Courier aggregator (Shiprocket etc.). Empty by default — shipments are
   // entered manually today (Order.shipment.provider === "manual"). When a
   // client is added it lives behind shipment.service.ts's saveShipment(), the

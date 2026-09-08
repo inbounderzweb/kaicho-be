@@ -1,9 +1,22 @@
 import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
-import { Product, Order, OrderDocument, OrderItem, User } from "../../database/models";
+import {
+  Product,
+  Order,
+  OrderDocument,
+  OrderItem,
+  User,
+  CouponDiscountType,
+} from "../../database/models";
 import { computeDiscount, getPrimaryImageUrlMap } from "../product/product.service";
 import { getAddressOrThrow } from "../address/address.service";
 import { createOrderWithUniqueNumber, toOrderDto } from "../order/order.service";
+import {
+  evaluateCouponForSubtotal,
+  consumeCouponForOrder,
+  releaseCouponForOrder,
+  type EvaluatedCoupon,
+} from "../coupon/coupon.service";
 import { createRazorpayOrder } from "../../common/payments/razorpay";
 import { getShippingPolicy } from "../settings/settings.service";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
@@ -27,15 +40,27 @@ const DEFAULT_SHIPPING_POLICY: ShippingPolicy = {
   flatShippingFee: FLAT_SHIPPING_FEE,
 };
 
+// A coupon discount already resolved to a concrete rupee amount by
+// coupon.service — computeOrderTotals only subtracts it, it never re-derives
+// it from the coupon rule (that lives in exactly one place).
+export interface ResolvedDiscount {
+  /** Rupees to take off the subtotal. 0 for a free-delivery coupon. */
+  discountAmount: number;
+  /** Force shippingFee to 0 regardless of the free-shipping threshold. */
+  freeDelivery: boolean;
+}
+
 // The ONE place order money is totalled, for both preview and real checkout.
 // taxTotal is 0 today: sellingPrice is treated as tax-inclusive (typical for
 // Indian D2C listings) and no tax engine is configured — when GST breakout is
 // needed it grows here and every caller inherits it for free.
 export function computeOrderTotals(
   lineTotals: number[],
-  policy: ShippingPolicy = DEFAULT_SHIPPING_POLICY
+  policy: ShippingPolicy = DEFAULT_SHIPPING_POLICY,
+  discount: ResolvedDiscount | null = null
 ): {
   subtotal: number;
+  discountTotal: number;
   shippingFee: number;
   taxTotal: number;
   grandTotal: number;
@@ -45,10 +70,27 @@ export function computeOrderTotals(
   // fractional-rupee lines can't drift a paisa per line.
   const subtotalMinor = lineTotals.reduce((sum, value) => sum + Math.round(value * 100), 0);
   const subtotal = subtotalMinor / 100;
-  const shippingFee = subtotal >= policy.freeShippingThreshold ? 0 : policy.flatShippingFee;
+
+  // Clamped to [0, subtotal] here as a last guard; coupon.service already
+  // computes it within those bounds.
+  const discountMinor = discount
+    ? Math.min(Math.max(0, Math.round(discount.discountAmount * 100)), subtotalMinor)
+    : 0;
+
+  // The free-shipping threshold is checked against the PRE-discount subtotal
+  // on purpose: a coupon must never silently re-add a delivery fee by pushing
+  // the order below the threshold.
+  const shippingFeeBeforeCoupon = subtotal >= policy.freeShippingThreshold ? 0 : policy.flatShippingFee;
+  const shippingFee = discount?.freeDelivery ? 0 : shippingFeeBeforeCoupon;
+
   const taxTotal = 0;
-  const grandTotal = (subtotalMinor + Math.round(shippingFee * 100) + Math.round(taxTotal * 100)) / 100;
-  return { subtotal, shippingFee, taxTotal, grandTotal };
+  const grandTotal =
+    Math.max(
+      0,
+      subtotalMinor - discountMinor + Math.round(shippingFee * 100) + Math.round(taxTotal * 100)
+    ) / 100;
+
+  return { subtotal, discountTotal: discountMinor / 100, shippingFee, taxTotal, grandTotal };
 }
 
 function lineTotalFor(unitPrice: number, quantity: number): number {
@@ -83,7 +125,7 @@ async function loadProducts(items: RequestedLine[]): Promise<Map<string, PricedP
 // added this" / "only 2 left" can be shown instead of a surprise 409 at
 // submit time. Unavailable lines are flagged, not thrown on, for exactly
 // that reason.
-export async function previewCheckout(input: CheckoutPreviewInput) {
+export async function previewCheckout(userId: string, input: CheckoutPreviewInput) {
   const products = await loadProducts(input.items);
   const imageUrls = await getPrimaryImageUrlMap(input.items.map((i) => i.productId));
   const shippingPolicy = await getShippingPolicy();
@@ -140,11 +182,53 @@ export async function previewCheckout(input: CheckoutPreviewInput) {
   // includes something the customer can't actually buy would be worse than
   // showing a smaller one next to the warning.
   const payable = items.filter((i) => !i.unavailable && !i.insufficientStock);
-  const pricing = computeOrderTotals(payable.map((i) => i.lineTotal), shippingPolicy);
+  const eligibleSubtotal =
+    payable.reduce((sum, i) => sum + Math.round(i.lineTotal * 100), 0) / 100;
+
+  let coupon:
+    | {
+        code: string;
+        name: string;
+        discountType: CouponDiscountType;
+        discountAmount: number;
+        freeDelivery: boolean;
+      }
+    | null = null;
+  let couponError: string | null = null;
+  let resolvedDiscount: ResolvedDiscount | null = null;
+
+  if (input.couponCode) {
+    try {
+      const evaluated = await evaluateCouponForSubtotal({
+        code: input.couponCode,
+        userId,
+        subtotal: eligibleSubtotal,
+      });
+      coupon = {
+        code: evaluated.code,
+        name: evaluated.name,
+        discountType: evaluated.discountType,
+        discountAmount: evaluated.discountAmount,
+        freeDelivery: evaluated.freeDelivery,
+      };
+      resolvedDiscount = {
+        discountAmount: evaluated.discountAmount,
+        freeDelivery: evaluated.freeDelivery,
+      };
+    } catch (err) {
+      // Preview must still price the cart when the coupon is bad — the page
+      // needs a total to render. The reason is surfaced, not thrown.
+      couponError = err instanceof AppError ? err.message : "Couldn't apply this coupon.";
+    }
+  }
+
+  const pricing = computeOrderTotals(payable.map((i) => i.lineTotal), shippingPolicy, resolvedDiscount);
 
   return {
     items,
     pricing,
+    coupon,
+    couponError,
     hasIssues: items.some((i) => i.unavailable || i.insufficientStock),
   };
 }
@@ -262,7 +346,30 @@ export async function createCheckout(
       });
     }
 
-    const pricing = computeOrderTotals(orderItems.map((i) => i.lineTotal), shippingPolicy);
+    // Re-validate the coupon against the freshly-priced cart, at this instant
+    // — the preview the customer saw may be minutes old and the coupon could
+    // have expired or hit its limit since (spec §10). Throwing here aborts
+    // the checkout; the outer catch releases the stock just reserved. Usage
+    // is NOT consumed yet — that's the atomic step after the order row
+    // exists.
+    let appliedCoupon: EvaluatedCoupon | null = null;
+    if (input.couponCode) {
+      const eligibleSubtotal =
+        orderItems.reduce((sum, i) => sum + Math.round(i.lineTotal * 100), 0) / 100;
+      appliedCoupon = await evaluateCouponForSubtotal({
+        code: input.couponCode,
+        userId,
+        subtotal: eligibleSubtotal,
+      });
+    }
+
+    const pricing = computeOrderTotals(
+      orderItems.map((i) => i.lineTotal),
+      shippingPolicy,
+      appliedCoupon
+        ? { discountAmount: appliedCoupon.discountAmount, freeDelivery: appliedCoupon.freeDelivery }
+        : null
+    );
     const status = input.paymentMethod === "COD" ? "CONFIRMED" : "PENDING_PAYMENT";
 
     let order: OrderDocument;
@@ -271,6 +378,15 @@ export async function createCheckout(
         userId: new mongoose.Types.ObjectId(userId),
         items: orderItems,
         pricing,
+        coupon: appliedCoupon
+          ? {
+              couponId: new mongoose.Types.ObjectId(appliedCoupon.couponId),
+              code: appliedCoupon.code,
+              discountType: appliedCoupon.discountType,
+              discountAmount: appliedCoupon.discountAmount,
+              freeDelivery: appliedCoupon.freeDelivery,
+            }
+          : undefined,
         shippingAddress: {
           label: address.label,
           receiverName: address.receiverName,
@@ -311,6 +427,28 @@ export async function createCheckout(
       throw err;
     }
 
+    // Consume the coupon now that the order row exists (it needs the orderId).
+    // Race-safe atomic increment + usage row; see coupon.service. On failure
+    // the coupon slot is gone — undo the whole order, then let the outer
+    // catch release the reserved stock.
+    if (appliedCoupon) {
+      try {
+        await consumeCouponForOrder({
+          code: appliedCoupon.code,
+          userId,
+          order,
+          discount: {
+            discountType: appliedCoupon.discountType,
+            discountAmount: appliedCoupon.discountAmount,
+            freeDelivery: appliedCoupon.freeDelivery,
+          },
+        });
+      } catch (err) {
+        await order.deleteOne();
+        throw err;
+      }
+    }
+
     let razorpayOrder: unknown = null;
     if (input.paymentMethod === "RAZORPAY") {
       try {
@@ -322,9 +460,11 @@ export async function createCheckout(
         await order.save();
       } catch (err) {
         // The gateway call failed after the order row exists. Delete it and
-        // release the stock rather than stranding an unpayable
-        // PENDING_PAYMENT order that also burns the idempotency key.
+        // release the stock (and any consumed coupon) rather than stranding
+        // an unpayable PENDING_PAYMENT order that also burns the idempotency
+        // key.
         await order.deleteOne();
+        await releaseCouponForOrder(order);
         throw err;
       }
     }
@@ -339,4 +479,53 @@ export async function createCheckout(
 function isDuplicateKeyError(err: unknown, field: string): boolean {
   const candidate = err as { code?: number; keyPattern?: Record<string, unknown> };
   return candidate?.code === 11000 && Boolean(candidate.keyPattern && field in candidate.keyPattern);
+}
+
+// ---- Coupon validation (POST /api/coupons/validate) ----
+// Prices the cart the same way previewCheckout does — only ACTIVE, in-stock
+// lines count toward the eligible subtotal — then runs the full coupon rule
+// set. Unlike preview, an invalid coupon THROWS here: answering "can I use
+// this code" IS this endpoint's job, so the AppError is the answer. Never
+// consumes usage (spec §9).
+export async function validateCouponForCart(
+  userId: string,
+  code: string,
+  items: RequestedLine[]
+) {
+  const [products, shippingPolicy] = await Promise.all([
+    loadProducts(items),
+    getShippingPolicy(),
+  ]);
+
+  const eligibleLineTotals: number[] = [];
+  for (const line of items) {
+    const product = products.get(line.productId);
+    if (!product || product.status !== "ACTIVE") continue;
+    if (product.inventory.trackInventory && product.inventory.stockQuantity < line.quantity) continue;
+    eligibleLineTotals.push(lineTotalFor(product.pricing.sellingPrice, line.quantity));
+  }
+
+  const subtotal = eligibleLineTotals.reduce((sum, v) => sum + Math.round(v * 100), 0) / 100;
+
+  const evaluated = await evaluateCouponForSubtotal({ code, userId, subtotal });
+  const pricing = computeOrderTotals(eligibleLineTotals, shippingPolicy, {
+    discountAmount: evaluated.discountAmount,
+    freeDelivery: evaluated.freeDelivery,
+  });
+
+  return {
+    valid: true as const,
+    coupon: { code: evaluated.code, name: evaluated.name },
+    discount: {
+      type: evaluated.discountType,
+      amount: evaluated.discountAmount,
+      freeDelivery: evaluated.freeDelivery,
+    },
+    pricing: {
+      subtotal: pricing.subtotal,
+      discount: pricing.discountTotal,
+      delivery: pricing.shippingFee,
+      total: pricing.grandTotal,
+    },
+  };
 }

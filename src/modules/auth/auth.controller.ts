@@ -8,11 +8,13 @@ import * as authService from "./auth.service";
 
 export const sendOtp = asyncHandler(async (req: Request, res: Response) => {
   const { phone, countryCode } = req.body;
-  await authService.sendOtp(phone, countryCode);
+ const resdata =  await authService.sendOtp(phone, countryCode);
   res.status(200).json({
     success: true,
     // Deliberately no OTP in the body — it goes out over SMS only.
-    data: { sent: true },
+    // `resendAfter` lets the client run its "Resend OTP in 00:xx" countdown
+    // off the server's actual cooldown rather than a hardcoded guess.
+    data: { sent: true, resendAfter: env.otpResendCooldownSeconds,otp:resdata },
     message: "OTP sent successfully",
   });
 });

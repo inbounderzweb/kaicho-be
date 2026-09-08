@@ -97,6 +97,23 @@ export const checkoutLimiter = rateLimit({
   },
 });
 
+// Coupon-code validation. Same per-user keying as checkout (it's always
+// behind requireAuth). Its real job is to stop a script enumerating valid
+// codes through /api/coupons/validate — the endpoint already returns a
+// single opaque message for every "not usable" reason, and this caps the
+// attempt rate on top.
+export const couponValidateLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitCouponValidateMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.userId ?? ipKeyGenerator(req.ip ?? "unknown"),
+  message: {
+    success: false,
+    message: "Too many coupon attempts. Please try again later.",
+  },
+});
+
 // Same per-user keying. Deliberately NOT applied to the Razorpay webhook
 // route — that one is called by Razorpay's servers and its correctness comes
 // from signature verification, not throttling.

@@ -6,6 +6,7 @@ import {
   OrderDocument,
   OrderItem,
   OrderPricing,
+  OrderCoupon,
   OrderShippingAddress,
   OrderStatus,
   OrderPaymentMethod,
@@ -14,6 +15,7 @@ import {
   ORDER_STATUS_TRANSITIONS,
   Product,
 } from "../../database/models";
+import { releaseCouponForOrder } from "../coupon/coupon.service";
 
 function isValidObjectId(id: string): boolean {
   return mongoose.isValidObjectId(id);
@@ -49,6 +51,7 @@ export interface NewOrderPayload {
   items: OrderItem[];
   pricing: OrderPricing;
   shippingAddress: OrderShippingAddress;
+  coupon?: OrderCoupon;
   status: OrderStatus;
   paymentMethod: OrderPaymentMethod;
   paymentStatus: OrderPaymentStatus;
@@ -96,6 +99,8 @@ export function toOrderDto(doc: OrderDocument) {
     })),
     pricing: {
       subtotal: doc.pricing.subtotal,
+      // Absent on orders placed before coupons existed — default to 0.
+      discountTotal: doc.pricing.discountTotal ?? 0,
       shippingFee: doc.pricing.shippingFee,
       taxTotal: doc.pricing.taxTotal,
       grandTotal: doc.pricing.grandTotal,
@@ -150,6 +155,16 @@ export function toOrderDto(doc: OrderDocument) {
             at: entry.at.toISOString(),
             note: entry.note,
           })),
+        }
+      : null,
+    // Frozen coupon snapshot — null for orders with no coupon. Safe for both
+    // the customer (it's their discount) and the admin order pages.
+    coupon: doc.coupon
+      ? {
+          code: doc.coupon.code,
+          discountType: doc.coupon.discountType,
+          discountAmount: doc.coupon.discountAmount,
+          freeDelivery: doc.coupon.freeDelivery,
         }
       : null,
     cancelReason: doc.cancelReason,
@@ -225,6 +240,9 @@ export async function cancelOrderForUser(userId: string, orderNumber: string, re
   }
 
   await restoreStockForOrder(doc);
+  // Cancelling frees any coupon this order held (full reversal — the order
+  // never completed). Refunds do NOT reach here and keep the redemption.
+  await releaseCouponForOrder(doc);
 
   doc.status = "CANCELLED";
   doc.cancelReason = reason;
@@ -381,6 +399,7 @@ export async function updateOrderStatusAdmin(
   // the same reason the customer path does.
   if (nextStatus === "CANCELLED") {
     await restoreStockForOrder(doc);
+    await releaseCouponForOrder(doc);
     doc.cancelReason = note ?? "Cancelled by admin";
   }
 

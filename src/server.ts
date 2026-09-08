@@ -7,6 +7,7 @@ import { cleanupExpiredTemporaryMedia } from "./modules/media/mediaCleanup";
 import { cancelStalePendingOrders } from "./modules/order/orderCleanup";
 import { publishDueScheduledBlogs } from "./modules/blog/blogScheduler";
 import { ensureUserAuthIndexes } from "./modules/auth/auth.indexes";
+import { ensureCouponIndexes } from "./modules/coupon/coupon.indexes";
 import { backfillStructuredAddresses } from "./modules/address/address.migration";
 
 const MEDIA_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
@@ -59,6 +60,9 @@ async function bootstrap() {
     await ensureUserAuthIndexes().catch((err) => {
       console.error("[auth] index reconciliation failed:", err);
     });
+    await ensureCouponIndexes().catch((err) => {
+      console.error("[coupon] index setup failed:", err);
+    });
     await backfillStructuredAddresses().catch((err) => {
       console.error("[address] structured-field backfill failed:", err);
     });
@@ -74,6 +78,9 @@ async function bootstrap() {
     await connectDatabase();
     await ensureUserAuthIndexes().catch((err) => {
       console.error("[auth] index reconciliation failed:", err);
+    });
+    await ensureCouponIndexes().catch((err) => {
+      console.error("[coupon] index setup failed:", err);
     });
     await backfillStructuredAddresses().catch((err) => {
       console.error("[address] structured-field backfill failed:", err);

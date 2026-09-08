@@ -1,5 +1,6 @@
 import { Order } from "../../database/models";
 import { restoreStockForOrder } from "./order.service";
+import { releaseCouponForOrder } from "../coupon/coupon.service";
 
 // Abandoned checkouts: a PENDING_PAYMENT order holds decremented stock from
 // the moment it's created, so a customer who opens the Razorpay modal and
@@ -28,6 +29,7 @@ export async function cancelStalePendingOrders(): Promise<{ cancelled: number; f
   for (const doc of stale) {
     try {
       await restoreStockForOrder(doc);
+      await releaseCouponForOrder(doc);
       doc.status = "CANCELLED";
       doc.paymentStatus = "FAILED";
       doc.cancelReason = "Payment not completed in time";

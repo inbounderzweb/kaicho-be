@@ -56,7 +56,12 @@ export async function sendOtp(phone: string, countryCode?: string): Promise<void
       (Date.now() - lastOtp.createdAt.getTime()) / 1000;
     if (secondsSinceLast < env.otpResendCooldownSeconds) {
       const wait = Math.ceil(env.otpResendCooldownSeconds - secondsSinceLast);
-      throw new AppError(`Please wait ${wait}s before requesting another OTP`, 429);
+      // `retryAfter` is the machine-readable form of the number in the
+      // message — the client uses it to drive a live countdown instead of
+      // showing a frozen "wait 28s".
+      throw new AppError(`Please wait ${wait}s before requesting another OTP`, 429, true, {
+        retryAfter: wait,
+      });
     }
   }
 
@@ -77,6 +82,8 @@ export async function sendOtp(phone: string, countryCode?: string): Promise<void
 
   const message = `${otp} is your Kaicho verification code. Valid for ${env.otpExpiryMinutes} minutes.`;
   await getSmsProvider().sendSms(`${countryCode ?? env.defaultCountryCode}${phone}`, message);
+  const data:any = message
+  return data
 }
 
 // Best-effort: called from logout, which must succeed even if the presented

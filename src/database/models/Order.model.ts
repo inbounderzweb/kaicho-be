@@ -1,4 +1,5 @@
 import { Schema, model, Document, Types } from "mongoose";
+import { COUPON_DISCOUNT_TYPES, CouponDiscountType } from "./Coupon.model";
 
 // An Order is an immutable-ish *snapshot* of what the customer bought, not a
 // set of live references. Line items copy name/sku/imageUrl/prices at the
@@ -116,9 +117,27 @@ export interface OrderItem {
 
 export interface OrderPricing {
   subtotal: number;
+  // Coupon discount applied to the subtotal, in rupees. 0 when no coupon (or
+  // a FREE_DELIVERY coupon, whose benefit is a zeroed shippingFee instead).
+  // Optional in the type — absent on orders placed before coupons existed and
+  // on hand-built pricing literals — but the schema always persists it (min 0,
+  // default 0), so a stored order document always has it.
+  discountTotal?: number;
   shippingFee: number;
   taxTotal: number;
   grandTotal: number;
+}
+
+// A frozen copy of what the coupon granted THIS order. Never re-derive
+// historical pricing from the live Coupon document — it may since have been
+// edited, paused, expired or archived. `couponId` is kept only for admin
+// cross-referencing ("orders that used coupon X"), not for recalculation.
+export interface OrderCoupon {
+  couponId: Types.ObjectId;
+  code: string;
+  discountType: CouponDiscountType;
+  discountAmount: number;
+  freeDelivery: boolean;
 }
 
 export interface OrderShippingAddress {
@@ -192,6 +211,7 @@ export interface OrderDocument extends Document {
   paymentStatus: OrderPaymentStatus;
   payment?: OrderPayment;
   shipment?: OrderShipment;
+  coupon?: OrderCoupon;
   idempotencyKey?: string;
   statusHistory: OrderStatusHistoryEntry[];
   cancelReason?: string;
@@ -218,9 +238,24 @@ const OrderItemSchema = new Schema<OrderItem>(
 const OrderPricingSchema = new Schema<OrderPricing>(
   {
     subtotal: { type: Number, required: true, min: 0 },
+    discountTotal: { type: Number, required: true, min: 0, default: 0 },
     shippingFee: { type: Number, required: true, min: 0, default: 0 },
     taxTotal: { type: Number, required: true, min: 0, default: 0 },
     grandTotal: { type: Number, required: true, min: 0 },
+  },
+  { _id: false }
+);
+
+// `default: undefined` (same reason as OrderPaymentSchema) — most orders have
+// no coupon, and auto-vivifying `{}` would make `order.coupon ? …` checks
+// meaningless.
+const OrderCouponSchema = new Schema<OrderCoupon>(
+  {
+    couponId: { type: Schema.Types.ObjectId, ref: "Coupon", required: true },
+    code: { type: String, required: true, trim: true, uppercase: true },
+    discountType: { type: String, enum: COUPON_DISCOUNT_TYPES, required: true },
+    discountAmount: { type: Number, required: true, min: 0 },
+    freeDelivery: { type: Boolean, required: true, default: false },
   },
   { _id: false }
 );
@@ -319,6 +354,7 @@ const OrderSchema = new Schema<OrderDocument>(
 
     payment: { type: OrderPaymentSchema, default: undefined },
     shipment: { type: OrderShipmentSchema, default: undefined },
+    coupon: { type: OrderCouponSchema, default: undefined },
 
     // Sparse so orders created by any future non-checkout path (admin
     // manual entry, imports) without a key don't collide on `null`.
@@ -340,5 +376,7 @@ OrderSchema.index({ "payment.razorpayPaymentId": 1 });
 // Support "find the order for this AWB" (customer-support lookups, and a
 // future courier webhook that only carries the tracking number).
 OrderSchema.index({ "shipment.trackingNumber": 1 });
+// Admin "orders that used coupon X". Sparse — most orders carry no coupon.
+OrderSchema.index({ "coupon.couponId": 1 }, { sparse: true });
 
 export const Order = model<OrderDocument>("Order", OrderSchema);

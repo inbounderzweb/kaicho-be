@@ -113,7 +113,7 @@ describe("checkout uses the configured shipping policy", () => {
     // Threshold high enough that a small cart never reaches it, fee distinct
     // from the default so the assertion is unambiguous.
     await updateStoreSettings({ freeShippingThreshold: 5000, flatShippingFee: 77 });
-    const preview = await previewCheckout({ items: [] });
+    const preview = await previewCheckout(new mongoose.Types.ObjectId().toString(), { items: [] });
     expect(preview.pricing.shippingFee).toBe(77);
   });
 });

@@ -20,7 +20,9 @@ const cartItemSchema = z.object({
     .max(100, "Quantity is too large"),
 });
 
-const cartItemsField = z
+// Exported so the coupon module's /validate schema reuses the exact same
+// untrusted-cart shape (see coupon.validation.ts).
+export const cartItemsField = z
   .array(cartItemSchema)
   .min(1, "Your cart is empty")
   .max(50, "Too many items in one order")
@@ -29,14 +31,26 @@ const cartItemsField = z
     "The same product appears more than once — merge it into a single line"
   );
 
+// A coupon code is the only coupon input the client ever sends — never a
+// discount amount or a total. Trimmed here; canonicalised (uppercased,
+// spaces stripped) server-side in coupon.service.
+const couponCodeField = z
+  .string()
+  .trim()
+  .min(1, "Enter a coupon code")
+  .max(40, "Coupon code is too long")
+  .optional();
+
 export const checkoutPreviewSchema = z.object({
   items: cartItemsField,
+  couponCode: couponCodeField,
 });
 
 export const createCheckoutSchema = z.object({
   items: cartItemsField,
   addressId: objectIdField,
   paymentMethod: z.enum(ORDER_PAYMENT_METHODS),
+  couponCode: couponCodeField,
 });
 
 export type CheckoutPreviewInput = z.infer<typeof checkoutPreviewSchema>;
