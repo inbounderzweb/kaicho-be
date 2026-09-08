@@ -18,6 +18,8 @@ import addressRoutes from "../modules/address/address.routes";
 import checkoutRoutes from "../modules/checkout/checkout.routes";
 import couponRoutes from "../modules/coupon/coupon.routes";
 import adminCouponRoutes from "../modules/coupon/adminCoupon.routes";
+import adminInstagramPostRoutes from "../modules/instagramPost/instagramPost.routes";
+import adminYouTubeVideoRoutes from "../modules/youtubeVideo/youtubeVideo.routes";
 import orderRoutes from "../modules/order/order.routes";
 import adminOrderRoutes from "../modules/order/adminOrder.routes";
 import paymentRoutes from "../modules/payment/payment.routes";
@@ -64,6 +66,10 @@ router.use("/admin/settings", adminSettingsRoutes);
 // Same ordering rule as the admin routers above — mounted before the generic
 // "/admin" dashboard router so it wins the match.
 router.use("/admin/coupons", adminCouponRoutes);
+// Same ordering rule as the admin routers above — mounted before the generic
+// "/admin" dashboard router so it wins the match.
+router.use("/admin/instagram-posts", adminInstagramPostRoutes);
+router.use("/admin/youtube-videos", adminYouTubeVideoRoutes);
 router.use("/admin", adminDashboardRoutes);
 
 // Public, unauthenticated customer-facing catalog routes — separate DTOs

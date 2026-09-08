@@ -17,3 +17,5 @@ export * from "./Inquiry.model";
 export * from "./InquiryNote.model";
 export * from "./InquiryActivity.model";
 export * from "./StoreSettings.model";
+export * from "./InstagramPost.model";
+export * from "./YouTubeVideo.model";

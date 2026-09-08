@@ -8,6 +8,8 @@ import { cancelStalePendingOrders } from "./modules/order/orderCleanup";
 import { publishDueScheduledBlogs } from "./modules/blog/blogScheduler";
 import { ensureUserAuthIndexes } from "./modules/auth/auth.indexes";
 import { ensureCouponIndexes } from "./modules/coupon/coupon.indexes";
+import { ensureInstagramPostIndexes } from "./modules/instagramPost/instagramPost.indexes";
+import { ensureYouTubeVideoIndexes } from "./modules/youtubeVideo/youtubeVideo.indexes";
 import { backfillStructuredAddresses } from "./modules/address/address.migration";
 
 const MEDIA_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
@@ -63,6 +65,12 @@ async function bootstrap() {
     await ensureCouponIndexes().catch((err) => {
       console.error("[coupon] index setup failed:", err);
     });
+    await ensureInstagramPostIndexes().catch((err) => {
+      console.error("[instagram-post] index setup failed:", err);
+    });
+    await ensureYouTubeVideoIndexes().catch((err) => {
+      console.error("[youtube-video] index setup failed:", err);
+    });
     await backfillStructuredAddresses().catch((err) => {
       console.error("[address] structured-field backfill failed:", err);
     });
@@ -81,6 +89,12 @@ async function bootstrap() {
     });
     await ensureCouponIndexes().catch((err) => {
       console.error("[coupon] index setup failed:", err);
+    });
+    await ensureInstagramPostIndexes().catch((err) => {
+      console.error("[instagram-post] index setup failed:", err);
+    });
+    await ensureYouTubeVideoIndexes().catch((err) => {
+      console.error("[youtube-video] index setup failed:", err);
     });
     await backfillStructuredAddresses().catch((err) => {
       console.error("[address] structured-field backfill failed:", err);
