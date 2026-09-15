@@ -3,6 +3,7 @@ import { Order, OrderDocument } from "../../database/models";
 import { verifyPaymentSignature, verifyWebhookSignature } from "../../common/payments/razorpay";
 import { restoreStockForOrder, toOrderDto } from "../order/order.service";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
+import { notifyAdminsNewOrder } from "../notification/notification.service";
 import type { VerifyPaymentInput } from "./payment.validation";
 
 // Two independent paths can mark an order paid: the browser handback
@@ -31,6 +32,19 @@ function markOrderPaid(doc: OrderDocument, razorpayPaymentId: string, razorpaySi
     doc.statusHistory.push({ status: "CONFIRMED", at: new Date(), note: "Payment received" });
   }
   return true;
+}
+
+// Fires the admin notification exactly once, at the moment an order first
+// becomes CONFIRMED via payment (mirrors the COD branch in
+// checkout.service.ts, which notifies at its own CONFIRMED moment instead).
+// markOrderPaid's own "already PAID -> no-op" guard means `changed` is only
+// ever true on the transition that matters here, so this can't double-fire
+// for the same order across the verify + webhook paths racing each other.
+function notifyIfJustConfirmed(doc: OrderDocument, changed: boolean): void {
+  if (!changed || doc.status !== "CONFIRMED") return;
+  notifyAdminsNewOrder(doc).catch((err) => {
+    console.error("[notification] new-order notify failed", err);
+  });
 }
 
 export async function verifyPayment(userId: string, input: VerifyPaymentInput) {
@@ -62,8 +76,9 @@ export async function verifyPayment(userId: string, input: VerifyPaymentInput) {
     throw new AppError("Payment verification failed", 400);
   }
 
-  markOrderPaid(doc, input.razorpayPaymentId, input.razorpaySignature);
+  const changed = markOrderPaid(doc, input.razorpayPaymentId, input.razorpaySignature);
   await doc.save();
+  notifyIfJustConfirmed(doc, changed);
 
   return { order: toOrderDto(doc), alreadyVerified: false };
 }
@@ -100,6 +115,7 @@ export async function handleWebhookEvent(body: RazorpayWebhookPayload): Promise<
     if (!doc || !entity?.id) return logUnmatched(event, entity?.order_id);
     const changed = markOrderPaid(doc, entity.id);
     if (changed) await doc.save();
+    notifyIfJustConfirmed(doc, changed);
     return { handled: true };
   }
 

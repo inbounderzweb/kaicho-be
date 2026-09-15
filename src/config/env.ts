@@ -155,4 +155,18 @@ export const env = {
   // same seam refunds use for Razorpay; nothing else needs to change here.
   shiprocketEmail: required("SHIPROCKET_EMAIL", ""),
   shiprocketPassword: required("SHIPROCKET_PASSWORD", ""),
+
+  // New-order admin notifications (email leg). Empty by default so the app
+  // keeps booting without SMTP configured — notification.service.ts treats a
+  // missing host/user/pass as "email disabled" and only logs, same dev-safe
+  // pattern as the Razorpay/Shiprocket placeholders above. Any standard SMTP
+  // provider works (Gmail app password, SendGrid/Mailtrap/SES SMTP relay).
+  smtpHost: required("SMTP_HOST", ""),
+  smtpPort: requiredInt("SMTP_PORT", 587),
+  smtpUser: required("SMTP_USER", ""),
+  smtpPass: required("SMTP_PASS", ""),
+  smtpFrom: required("SMTP_FROM", ""),
+  // Recipient(s) for the new-order email — comma-separated for more than one
+  // admin inbox.
+  adminNotificationEmail: required("ADMIN_NOTIFICATION_EMAIL", ""),
 };

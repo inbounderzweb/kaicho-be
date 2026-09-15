@@ -1,8 +1,10 @@
 import cluster from "node:cluster";
 import os from "node:os";
+import http from "node:http";
 import app from "./app";
 import { env } from "./config/env";
 import { connectDatabase } from "./database/connection";
+import { initSocket } from "./modules/notification/socket";
 import { cleanupExpiredTemporaryMedia } from "./modules/media/mediaCleanup";
 import { cancelStalePendingOrders } from "./modules/order/orderCleanup";
 import { publishDueScheduledBlogs } from "./modules/blog/blogScheduler";
@@ -47,7 +49,16 @@ function startBackgroundJobs() {
 
 async function startHttpServer() {
   await connectDatabase();
-  app.listen(env.port, () => {
+  // Built explicitly (rather than app.listen(...)) so Socket.IO can attach
+  // to the same underlying server instead of opening a second port. Note:
+  // with WEB_CONCURRENCY > 1 each cluster worker gets its own in-memory
+  // Socket.IO instance with no shared adapter, so an admin socket connected
+  // to worker A won't hear about an order created on worker B — fine at the
+  // current single-worker dev/prod setting, but would need a Redis adapter
+  // (socket.io-adapter) before scaling workers.
+  const httpServer = http.createServer(app);
+  initSocket(httpServer);
+  httpServer.listen(env.port, () => {
     const who = cluster.isWorker ? `worker ${process.pid}` : "server";
     console.log(`Kaicho backend ${who} listening on http://localhost:${env.port}`);
   });
