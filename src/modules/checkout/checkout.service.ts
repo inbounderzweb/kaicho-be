@@ -19,6 +19,7 @@ import {
 } from "../coupon/coupon.service";
 import { createRazorpayOrder } from "../../common/payments/razorpay";
 import { getShippingPolicy } from "../settings/settings.service";
+import { notifyAdminsNewOrder } from "../notification/notification.service";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
 
 // The shipping policy is now admin-configurable — the live values come from
@@ -467,6 +468,17 @@ export async function createCheckout(
         await releaseCouponForOrder(order);
         throw err;
       }
+    }
+
+    // COD orders are CONFIRMED the instant they're placed (no separate
+    // payment-success step) — that's the "successfully placed" moment for
+    // this payment method, so the admin notification fires right here.
+    // RAZORPAY orders stay PENDING_PAYMENT until payment.service.ts confirms
+    // them, which is where the equivalent call lives for that path.
+    if (order.status === "CONFIRMED") {
+      notifyAdminsNewOrder(order).catch((err) => {
+        console.error("[notification] new-order notify failed", err);
+      });
     }
 
     return { order: toOrderDto(order), razorpayOrder, replayed: false };

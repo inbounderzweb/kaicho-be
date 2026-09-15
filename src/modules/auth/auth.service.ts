@@ -68,6 +68,7 @@ export async function sendOtp(phone: string, countryCode?: string): Promise<void
   await OtpVerification.deleteMany({ phone, purpose: PURPOSE });
 
   const otp = generateOtp(env.otpLength);
+  console.log(`Generated OTP for ${countryCode ?? env.defaultCountryCode}${phone}: ${otp}`);
   const otpHash = await hashOtp(otp);
   const expiresAt = new Date(Date.now() + env.otpExpiryMinutes * 60 * 1000);
 
