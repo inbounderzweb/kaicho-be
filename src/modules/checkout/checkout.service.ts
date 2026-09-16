@@ -10,7 +10,7 @@ import {
 } from "../../database/models";
 import { computeDiscount, getPrimaryImageUrlMap } from "../product/product.service";
 import { getAddressOrThrow } from "../address/address.service";
-import { createOrderWithUniqueNumber, toOrderDto } from "../order/order.service";
+import { createOrderWithUniqueNumber, toGa4PurchaseParams, toOrderDto } from "../order/order.service";
 import {
   evaluateCouponForSubtotal,
   consumeCouponForOrder,
@@ -20,6 +20,7 @@ import {
 import { createRazorpayOrder } from "../../common/payments/razorpay";
 import { getShippingPolicy } from "../settings/settings.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
+import { trackServerPurchase } from "../../common/analytics/ga4";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
 
 // The shipping policy is now admin-configurable — the live values come from
@@ -472,12 +473,16 @@ export async function createCheckout(
 
     // COD orders are CONFIRMED the instant they're placed (no separate
     // payment-success step) — that's the "successfully placed" moment for
-    // this payment method, so the admin notification fires right here.
-    // RAZORPAY orders stay PENDING_PAYMENT until payment.service.ts confirms
-    // them, which is where the equivalent call lives for that path.
+    // this payment method, so the admin notification and GA4 purchase event
+    // both fire right here. RAZORPAY orders stay PENDING_PAYMENT until
+    // payment.service.ts confirms them, which is where the equivalent calls
+    // live for that path.
     if (order.status === "CONFIRMED") {
       notifyAdminsNewOrder(order).catch((err) => {
         console.error("[notification] new-order notify failed", err);
+      });
+      trackServerPurchase(toGa4PurchaseParams(order)).catch((err) => {
+        console.error("[analytics] GA4 purchase tracking failed", err);
       });
     }
 

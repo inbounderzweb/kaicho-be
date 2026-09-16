@@ -16,6 +16,7 @@ import {
   Product,
 } from "../../database/models";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
+import type { Ga4PurchaseParams } from "../../common/analytics/ga4";
 
 function isValidObjectId(id: string): boolean {
   return mongoose.isValidObjectId(id);
@@ -174,6 +175,24 @@ export function toOrderDto(doc: OrderDocument) {
     cancellable: ORDER_STATUS_TRANSITIONS[doc.status].includes("CANCELLED"),
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
+  };
+}
+
+// Shared by checkout.service.ts's COD branch and payment.service.ts's
+// notifyIfJustConfirmed — the two places an order first becomes CONFIRMED —
+// so the GA4 Measurement Protocol call (common/analytics/ga4.ts) always
+// reports the same item/pricing shape regardless of payment method.
+export function toGa4PurchaseParams(doc: OrderDocument): Ga4PurchaseParams {
+  return {
+    transaction_id: doc.orderNumber,
+    currency: "INR",
+    value: doc.pricing.grandTotal,
+    items: doc.items.map((item) => ({
+      item_id: item.productId.toString(),
+      item_name: item.name,
+      price: item.unitPrice,
+      quantity: item.quantity,
+    })),
   };
 }
 

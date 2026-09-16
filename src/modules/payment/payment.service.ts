@@ -1,9 +1,10 @@
 import { AppError } from "../../common/errors";
 import { Order, OrderDocument } from "../../database/models";
 import { verifyPaymentSignature, verifyWebhookSignature } from "../../common/payments/razorpay";
-import { restoreStockForOrder, toOrderDto } from "../order/order.service";
+import { restoreStockForOrder, toGa4PurchaseParams, toOrderDto } from "../order/order.service";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
+import { trackServerPurchase } from "../../common/analytics/ga4";
 import type { VerifyPaymentInput } from "./payment.validation";
 
 // Two independent paths can mark an order paid: the browser handback
@@ -34,16 +35,20 @@ function markOrderPaid(doc: OrderDocument, razorpayPaymentId: string, razorpaySi
   return true;
 }
 
-// Fires the admin notification exactly once, at the moment an order first
-// becomes CONFIRMED via payment (mirrors the COD branch in
-// checkout.service.ts, which notifies at its own CONFIRMED moment instead).
-// markOrderPaid's own "already PAID -> no-op" guard means `changed` is only
-// ever true on the transition that matters here, so this can't double-fire
-// for the same order across the verify + webhook paths racing each other.
+// Fires the admin notification and the GA4 purchase event exactly once, at
+// the moment an order first becomes CONFIRMED via payment (mirrors the COD
+// branch in checkout.service.ts, which fires both at its own CONFIRMED
+// moment instead). markOrderPaid's own "already PAID -> no-op" guard means
+// `changed` is only ever true on the transition that matters here, so
+// neither call can double-fire for the same order across the verify +
+// webhook paths racing each other.
 function notifyIfJustConfirmed(doc: OrderDocument, changed: boolean): void {
   if (!changed || doc.status !== "CONFIRMED") return;
   notifyAdminsNewOrder(doc).catch((err) => {
     console.error("[notification] new-order notify failed", err);
+  });
+  trackServerPurchase(toGa4PurchaseParams(doc)).catch((err) => {
+    console.error("[analytics] GA4 purchase tracking failed", err);
   });
 }
 

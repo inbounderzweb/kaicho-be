@@ -169,4 +169,15 @@ export const env = {
   // Recipient(s) for the new-order email — comma-separated for more than one
   // admin inbox.
   adminNotificationEmail: required("ADMIN_NOTIFICATION_EMAIL", ""),
+
+  // GA4 Measurement Protocol — server-to-server purchase tracking (see
+  // common/analytics/ga4.ts), independent of the browser/GTM pipeline. Empty
+  // by default so the app keeps booting without it configured, same
+  // dev-safe pattern as the SMTP/Razorpay placeholders above; ga4.ts treats
+  // a missing id/secret as "disabled" and only logs. Measurement ID is the
+  // G-XXXXXXX from the GA4 property; the API secret is generated at GA4
+  // Admin → Data Streams → (your web stream) → Measurement Protocol API
+  // secrets → Create — NOT the same thing as the GTM container ID.
+  ga4MeasurementId: required("GA4_MEASUREMENT_ID", ""),
+  ga4ApiSecret: required("GA4_API_SECRET", ""),
 };
