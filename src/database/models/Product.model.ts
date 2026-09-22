@@ -1,4 +1,5 @@
 import { Schema, model, Document, Types } from "mongoose";
+import { ProductPackConfig, ProductPackConfigSchema, InventoryTracking, InventoryTrackingSchema } from "./PackConfig.schema";
 
 // Product deliberately does NOT store image URLs, media binaries, or even a
 // `mediaIds` array. The Media module already supports many-to-one
@@ -33,6 +34,21 @@ export interface ProductSeo {
   ogImageMediaId?: Types.ObjectId;
 }
 
+export const RELATED_COMBO_MODES = ["AUTO", "MANUAL", "NONE"] as const;
+export type RelatedComboMode = (typeof RELATED_COMBO_MODES)[number];
+
+// "Is there a bundle/combo the customer should be offered instead of buying
+// this product plain?" — absent or "AUTO" (every product created before
+// this feature, and any new one that never opts out) means the backend
+// looks for one automatically from the inventoryTracking relationships that
+// already exist (see relatedCombo.service.ts); "MANUAL" pins one exact
+// product regardless of whether it's actually built from this one as a
+// component; "NONE" suppresses the suggestion outright.
+export interface RelatedCombo {
+  mode: RelatedComboMode;
+  comboProductId?: Types.ObjectId;
+}
+
 export interface ProductDocument extends Document {
   name: string;
   slug: string;
@@ -46,6 +62,22 @@ export interface ProductDocument extends Document {
   pricing: ProductPricing;
   inventory: ProductInventory;
   seo: ProductSeo;
+
+  // Absent (undefined) on every product created before this feature existed,
+  // and on any new product that never opts in — see PackConfig.schema.ts's
+  // header comment for why packs never touch inventory/discount storage.
+  packConfig?: ProductPackConfig;
+
+  // Governs a PLAIN/base purchase of this product (quantity=N, no pack
+  // selected) — absent/disabled means today's exact behaviour (deduct from
+  // this product's own `inventory.stockQuantity`). Enabled, this product IS
+  // a combo: buying N of it deducts N × each component's quantity from the
+  // referenced products instead, and this product's own stock counter is
+  // never touched. See inventoryTracking.service.ts.
+  inventoryTracking?: InventoryTracking;
+
+  // Absent/undefined behaves as "AUTO" — see RelatedCombo's own comment.
+  relatedCombo?: RelatedCombo;
 
   status: ProductStatus;
   isFeatured: boolean;
@@ -96,6 +128,14 @@ const ProductSeoSchema = new Schema<ProductSeo>(
   { _id: false }
 );
 
+const RelatedComboSchema = new Schema<RelatedCombo>(
+  {
+    mode: { type: String, enum: RELATED_COMBO_MODES, default: "AUTO" },
+    comboProductId: { type: Schema.Types.ObjectId, ref: "Product" },
+  },
+  { _id: false }
+);
+
 const ProductSchema = new Schema<ProductDocument>(
   {
     name: { type: String, required: true, trim: true, minlength: 2, maxlength: 200 },
@@ -110,6 +150,18 @@ const ProductSchema = new Schema<ProductDocument>(
     pricing: { type: ProductPricingSchema, required: true },
     inventory: { type: ProductInventorySchema, required: true },
     seo: { type: ProductSeoSchema, required: true },
+
+    // `default: undefined` — same reason Order.model.ts uses it for
+    // `payment`/`shipment`/`coupon`: auto-vivifying `{}` here would make
+    // `product.packConfig?.enabled` checks meaningless for the millions of
+    // products that never configure packs.
+    packConfig: { type: ProductPackConfigSchema, default: undefined },
+
+    // `default: undefined` — same reasoning as `packConfig` above.
+    inventoryTracking: { type: InventoryTrackingSchema, default: undefined },
+
+    // `default: undefined` — same reasoning as `packConfig` above.
+    relatedCombo: { type: RelatedComboSchema, default: undefined },
 
     status: { type: String, enum: PRODUCT_STATUSES, default: "DRAFT" },
     isFeatured: { type: Boolean, default: false },
@@ -129,5 +181,9 @@ ProductSchema.index({ createdAt: 1 });
 ProductSchema.index({ sortOrder: 1 });
 ProductSchema.index({ status: 1, isFeatured: 1, sortOrder: 1 });
 ProductSchema.index({ categoryId: 1, status: 1 });
+// Backs relatedCombo.service.ts's AUTO lookup — "which ACTIVE, tracking-
+// enabled products list this product as a component" — without it, that
+// query would have to scan every product's inventoryTracking.components.
+ProductSchema.index({ "inventoryTracking.enabled": 1, "inventoryTracking.components.productId": 1 });
 
 export const Product = model<ProductDocument>("Product", ProductSchema);

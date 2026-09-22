@@ -3,6 +3,7 @@ export * from "./OtpVerification.model";
 export * from "./Media.model";
 export * from "./MediaUsage.model";
 export * from "./Category.model";
+export * from "./PackConfig.schema";
 export * from "./Brand.model";
 export * from "./Product.model";
 export * from "./Collection.model";

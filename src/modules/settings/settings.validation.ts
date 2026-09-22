@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PACK_RECOMMENDATION_STRATEGIES } from "../../database/models";
 
 // Rupee amount: non-negative and capped at a sane ceiling so a fat-fingered
 // "4999999" can't silently switch free shipping off forever. Whole-rupee is
@@ -17,6 +18,7 @@ export const updateStoreSettingsSchema = z
   .object({
     freeShippingThreshold: amount.optional(),
     flatShippingFee: amount.optional(),
+    defaultPackRecommendationStrategy: z.enum(PACK_RECOMMENDATION_STRATEGIES).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: "At least one field must be provided",

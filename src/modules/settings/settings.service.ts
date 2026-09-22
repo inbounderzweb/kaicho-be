@@ -3,12 +3,14 @@ import {
   StoreSettings,
   StoreSettingsDocument,
   STORE_SETTINGS_DEFAULTS,
+  PackRecommendationStrategy,
 } from "../../database/models";
 import type { UpdateStoreSettingsInput } from "./settings.validation";
 
 export interface StoreSettingsDto {
   freeShippingThreshold: number;
   flatShippingFee: number;
+  defaultPackRecommendationStrategy: PackRecommendationStrategy;
   updatedAt: string;
 }
 
@@ -29,6 +31,7 @@ export function toStoreSettingsDto(doc: StoreSettingsDocument): StoreSettingsDto
   return {
     freeShippingThreshold: doc.freeShippingThreshold,
     flatShippingFee: doc.flatShippingFee,
+    defaultPackRecommendationStrategy: doc.defaultPackRecommendationStrategy,
     updatedAt: doc.updatedAt.toISOString(),
   };
 }
@@ -47,6 +50,9 @@ export async function updateStoreSettings(
   }
   if (patch.flatShippingFee !== undefined) {
     doc.flatShippingFee = patch.flatShippingFee;
+  }
+  if (patch.defaultPackRecommendationStrategy !== undefined) {
+    doc.defaultPackRecommendationStrategy = patch.defaultPackRecommendationStrategy;
   }
   if (userId) {
     doc.updatedBy = new mongoose.Types.ObjectId(userId);
@@ -70,5 +76,17 @@ export async function getShippingPolicy(): Promise<{
     };
   } catch {
     return { ...STORE_SETTINGS_DEFAULTS };
+  }
+}
+
+// Narrow read for pack-combination resolution's outermost "Global" tier —
+// mirrors getShippingPolicy()'s shape and its fail-safe fallback so a
+// settings hiccup can never block a pack recommendation.
+export async function getDefaultPackRecommendationStrategy(): Promise<PackRecommendationStrategy> {
+  try {
+    const doc = await getStoreSettingsDoc();
+    return doc.defaultPackRecommendationStrategy;
+  } catch {
+    return STORE_SETTINGS_DEFAULTS.defaultPackRecommendationStrategy;
   }
 }

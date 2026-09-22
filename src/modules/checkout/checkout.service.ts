@@ -2,13 +2,29 @@ import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
 import {
   Product,
+  Category,
   Order,
   OrderDocument,
   OrderItem,
+  OrderPackLine,
+  OrderInventoryComponentLine,
+  ProductPackConfig,
+  PackConfig,
+  PackRecommendationStrategy,
+  InventoryTracking,
   User,
   CouponDiscountType,
 } from "../../database/models";
 import { computeDiscount, getPrimaryImageUrlMap } from "../product/product.service";
+import { resolveEffectivePackConfig } from "../product/packCombination.service";
+import {
+  resolveEffectiveComponents,
+  calculateInventoryRequirement,
+  validateInventoryAvailability,
+  calculateMaximumAvailableQuantity,
+  mergeResolvedComponents,
+  type ResolvedComponent,
+} from "../product/inventoryTracking.service";
 import { getAddressOrThrow } from "../address/address.service";
 import { createOrderWithUniqueNumber, toGa4PurchaseParams, toOrderDto } from "../order/order.service";
 import {
@@ -18,7 +34,7 @@ import {
   type EvaluatedCoupon,
 } from "../coupon/coupon.service";
 import { createRazorpayOrder } from "../../common/payments/razorpay";
-import { getShippingPolicy } from "../settings/settings.service";
+import { getShippingPolicy, getDefaultPackRecommendationStrategy } from "../settings/settings.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
 import { trackServerPurchase } from "../../common/analytics/ga4";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
@@ -99,25 +115,191 @@ function lineTotalFor(unitPrice: number, quantity: number): number {
   return (Math.round(unitPrice * 100) * quantity) / 100;
 }
 
-interface RequestedLine {
+export interface RequestedLine {
   productId: string;
   quantity: number;
+  // Optional pack combination the customer confirmed client-side (via
+  // /cart/validate-pack or /cart/apply-pack) — a hint only. Everything
+  // billable is re-derived from the product/category's LIVE pack config
+  // below, exactly like `quantity`/price already are for plain unit lines.
+  packSelection?: { packId: string; count: number }[];
 }
 
-type PricedProduct = {
+export type PricedProduct = {
   _id: mongoose.Types.ObjectId;
   name: string;
   sku: string;
   status: string;
+  categoryId: mongoose.Types.ObjectId;
   pricing: { mrp: number; sellingPrice: number };
   inventory: { stockQuantity: number; trackInventory: boolean };
+  packConfig?: ProductPackConfig;
+  inventoryTracking?: InventoryTracking;
 };
 
 async function loadProducts(items: RequestedLine[]): Promise<Map<string, PricedProduct>> {
   const docs = await Product.find({ _id: { $in: items.map((i) => i.productId) } })
-    .select("name sku status pricing inventory")
+    .select("name sku status categoryId pricing inventory packConfig inventoryTracking")
     .lean();
   return new Map(docs.map((d) => [d._id.toString(), d as unknown as PricedProduct]));
+}
+
+export interface ComponentStock {
+  name: string;
+  sku: string;
+  stockQuantity: number;
+  trackInventory: boolean;
+}
+
+// Inventory components can reference a product that's nowhere else in the
+// cart (e.g. a combo pulling from a product the customer never directly
+// added) — this batch-loads whichever of those aren't already covered by
+// `loadProducts`'s result. Callers pass the union of ids they still need;
+// already-known productIds are cheap to re-request (a no-op $in match) and
+// keeping this a single extra query is simpler than diffing.
+async function loadComponentStock(productIds: string[]): Promise<Map<string, ComponentStock>> {
+  if (productIds.length === 0) return new Map();
+  const docs = await Product.find({ _id: { $in: productIds } })
+    .select("name sku inventory")
+    .lean();
+  return new Map(
+    docs.map((d) => [
+      d._id.toString(),
+      {
+        name: d.name,
+        sku: d.sku,
+        stockQuantity: d.inventory.stockQuantity,
+        trackInventory: d.inventory.trackInventory,
+      },
+    ])
+  );
+}
+
+// Only fetched for lines that actually carry a packSelection — the vast
+// majority of checkouts today are plain unit lines and shouldn't pay for an
+// extra query. Batched by distinct categoryId, not once per line.
+async function loadCategoryPackConfigs(
+  categoryIds: mongoose.Types.ObjectId[]
+): Promise<Map<string, { packConfig?: PackConfig }>> {
+  if (categoryIds.length === 0) return new Map();
+  const docs = await Category.find({ _id: { $in: categoryIds } })
+    .select("packConfig")
+    .lean();
+  return new Map(docs.map((d) => [d._id.toString(), d as unknown as { packConfig?: PackConfig }]));
+}
+
+export interface ResolvedLine {
+  /** Total base units — for a PACK line this is packQuantity*packCount summed, never a "pack count". */
+  quantity: number;
+  lineTotal: number;
+  /** Blended per-unit price (lineTotal / quantity) — kept for OrderItem.unitPrice's existing per-unit semantics. */
+  unitPrice: number;
+  discount: number;
+  discountPercentage: number;
+  selectionType: "UNIT" | "PACK";
+  packBreakdown?: OrderPackLine[];
+  /** Already multiplied by however many units/packs this line purchased — ready to merge across lines and deduct. */
+  inventoryRequirement: ResolvedComponent[];
+  /** True only when this line's requirement came from an explicit product/pack component configuration, not the self-referencing fallback — gates whether OrderItem.inventoryComponents gets populated (see inventoryTracking.service.ts#resolveEffectiveComponents). */
+  usesComponentTracking: boolean;
+}
+
+// Authoritatively resolves ONE cart line to a billable quantity/price.
+// Plain unit lines behave exactly as before this feature existed. A line
+// carrying `packSelection` is validated against the product's LIVE effective
+// pack config (Product > Category, never the client's cached copy) — an
+// unknown/inactive packId, a disallowed mix, or a product with packs not
+// enabled at all throws, forcing the client to re-derive its selection
+// rather than silently falling back (spec §7/§23: never trust a
+// client-calculated price).
+// Exported so cartPack.service.ts (the public /cart/validate-pack and
+// /cart/apply-pack endpoints) can reuse the exact same authoritative
+// resolution logic rather than re-implementing it — one place decides what a
+// pack selection actually costs and how many base units it represents.
+export function resolveLine(
+  line: RequestedLine,
+  product: PricedProduct,
+  category: { packConfig?: PackConfig } | null,
+  defaultStrategy: PackRecommendationStrategy
+): ResolvedLine {
+  if (!line.packSelection || line.packSelection.length === 0) {
+    const unitPrice = product.pricing.sellingPrice;
+    const { discount, discountPercentage } = computeDiscount(product.pricing.mrp, unitPrice);
+    const perUnitComponents = resolveEffectiveComponents(product);
+    return {
+      quantity: line.quantity,
+      lineTotal: lineTotalFor(unitPrice, line.quantity),
+      unitPrice,
+      discount,
+      discountPercentage,
+      selectionType: "UNIT",
+      inventoryRequirement: calculateInventoryRequirement(perUnitComponents, line.quantity),
+      usesComponentTracking: Boolean(
+        product.inventoryTracking?.enabled && product.inventoryTracking.components.length > 0
+      ),
+    };
+  }
+
+  const effective = resolveEffectivePackConfig(product, category, defaultStrategy);
+  if (!effective) {
+    throw new AppError(`${product.name} does not support pack selections`, 400);
+  }
+
+  if (!effective.mixedPacksAllowed) {
+    const distinctPackIds = new Set(line.packSelection.map((s) => s.packId));
+    if (distinctPackIds.size > 1) {
+      throw new AppError(`${product.name} does not allow mixing pack sizes`, 400);
+    }
+  }
+
+  const activePacksById = new Map(effective.packs.filter((p) => p.isActive).map((p) => [p._id.toString(), p]));
+
+  let totalQuantity = 0;
+  let totalPriceMinor = 0;
+  const packBreakdown: OrderPackLine[] = [];
+  // Different packs within the same (mixed) selection can each have their
+  // own component override — resolved and merged per selection, not once
+  // for the whole line, so a 20-pack with its own components and a 10-pack
+  // that falls back to its parent both contribute correctly.
+  const requirementsPerSelection: ResolvedComponent[][] = [];
+  let usesComponentTracking = false;
+  for (const selection of line.packSelection) {
+    const pack = activePacksById.get(selection.packId);
+    if (!pack) {
+      throw new AppError(`A selected pack for ${product.name} is no longer available`, 409);
+    }
+    totalQuantity += pack.quantity * selection.count;
+    totalPriceMinor += Math.round(pack.price * 100) * selection.count;
+    packBreakdown.push({
+      packId: pack._id,
+      packName: pack.name,
+      packQuantity: pack.quantity,
+      packCount: selection.count,
+      packPrice: pack.price,
+    });
+
+    const packComponents = resolveEffectiveComponents(product, pack);
+    requirementsPerSelection.push(calculateInventoryRequirement(packComponents, selection.count));
+    if (pack.useComponentInventory && pack.inventoryComponents.length > 0) {
+      usesComponentTracking = true;
+    }
+  }
+
+  const lineTotal = totalPriceMinor / 100;
+  const unitPrice = totalQuantity > 0 ? Math.round((lineTotal / totalQuantity) * 100) / 100 : 0;
+  const { discount, discountPercentage } = computeDiscount(product.pricing.mrp, unitPrice);
+
+  return {
+    quantity: totalQuantity,
+    lineTotal,
+    unitPrice,
+    discount,
+    discountPercentage,
+    selectionType: "PACK",
+    packBreakdown,
+    inventoryRequirement: mergeResolvedComponents(...requirementsPerSelection),
+    usesComponentTracking,
+  };
 }
 
 // ---- Preview ----
@@ -130,11 +312,55 @@ async function loadProducts(items: RequestedLine[]): Promise<Map<string, PricedP
 export async function previewCheckout(userId: string, input: CheckoutPreviewInput) {
   const products = await loadProducts(input.items);
   const imageUrls = await getPrimaryImageUrlMap(input.items.map((i) => i.productId));
-  const shippingPolicy = await getShippingPolicy();
+  const [shippingPolicy, defaultStrategy, categories] = await Promise.all([
+    getShippingPolicy(),
+    getDefaultPackRecommendationStrategy(),
+    loadCategoryPackConfigs(
+      [...products.values()].filter((p) => input.items.some((i) => i.productId === p._id.toString() && i.packSelection)).map((p) => p.categoryId)
+    ),
+  ]);
 
-  const items = input.items.map((line) => {
+  // Pass 1: resolve every line's pricing + inventory requirement. Errors
+  // (stale pack selection etc.) are captured per-line, not thrown — preview
+  // must still render a row for every line so the UI can prompt a fix on
+  // just that one.
+  const resolvedLines = input.items.map((line) => {
     const product = products.get(line.productId);
+    if (!product) return { line, product: null, resolved: null, error: null as string | null };
 
+    try {
+      const resolved = resolveLine(line, product, categories.get(product.categoryId.toString()) ?? null, defaultStrategy);
+      return { line, product, resolved, error: null as string | null };
+    } catch (err) {
+      return {
+        line,
+        product,
+        resolved: null,
+        error: err instanceof AppError ? err.message : "This pack selection is no longer available.",
+      };
+    }
+  });
+
+  // Pass 2: aggregate every successfully-resolved line's requirement across
+  // the WHOLE cart, so a component two different lines both need is checked
+  // against its real combined demand — not twice independently, which could
+  // pass each line individually while together exceeding stock.
+  const combinedRequirement = mergeResolvedComponents(
+    ...resolvedLines.filter((r) => r.resolved).map((r) => r.resolved!.inventoryRequirement)
+  );
+  const knownComponentIds = new Set(combinedRequirement.map((c) => c.productId));
+  const extraComponentIds = [...knownComponentIds].filter((id) => !products.has(id));
+  const componentStock = await loadComponentStock(extraComponentIds);
+  const stockByProductId = new Map<string, ComponentStock>([
+    ...[...products.entries()].map(([id, p]) => [id, { name: p.name, sku: p.sku, ...p.inventory }] as const),
+    ...componentStock.entries(),
+  ]);
+  const { shortfalls } = validateInventoryAvailability(combinedRequirement, 1, stockByProductId);
+  const shortfallSet = new Set(shortfalls);
+
+  // Pass 3: shape the response DTO, now that both the resolution and the
+  // cross-line availability check are done.
+  const items = resolvedLines.map(({ line, product, resolved, error }) => {
     if (!product) {
       return {
         productId: line.productId,
@@ -147,36 +373,75 @@ export async function previewCheckout(userId: string, input: CheckoutPreviewInpu
         discount: 0,
         discountPercentage: 0,
         lineTotal: 0,
+        selectionType: "UNIT" as const,
+        packBreakdown: undefined as ResolvedLine["packBreakdown"],
         unavailable: true,
         insufficientStock: false,
         availableQuantity: 0,
       };
     }
 
-    const { discount, discountPercentage } = computeDiscount(
-      product.pricing.mrp,
-      product.pricing.sellingPrice
-    );
+    if (!resolved) {
+      return {
+        productId: line.productId,
+        name: product.name,
+        sku: product.sku,
+        imageUrl: imageUrls.get(line.productId) ?? null,
+        quantity: line.quantity,
+        unitPrice: 0,
+        mrp: product.pricing.mrp,
+        discount: 0,
+        discountPercentage: 0,
+        lineTotal: 0,
+        selectionType: "UNIT" as const,
+        packBreakdown: undefined as ResolvedLine["packBreakdown"],
+        unavailable: true,
+        insufficientStock: false,
+        availableQuantity: product.inventory.trackInventory ? product.inventory.stockQuantity : line.quantity,
+        packError: error,
+      };
+    }
+
     const unavailable = product.status !== "ACTIVE";
-    const tracked = product.inventory.trackInventory;
-    const insufficientStock = tracked && product.inventory.stockQuantity < line.quantity;
+    const insufficientStock = resolved.inventoryRequirement.some((r) => shortfallSet.has(r.productId));
+
+    // Informational only — the exact max-purchasable figure is only
+    // well-defined for a UNIT line (one product, one component set); a
+    // mixed PACK line's "how many more could I add" doesn't reduce to one
+    // number the same way, so it falls back to the parent's own raw stock,
+    // same as before this feature existed.
+    const componentMax =
+      resolved.selectionType === "UNIT" && resolved.usesComponentTracking
+        ? calculateMaximumAvailableQuantity(resolveEffectiveComponents(product), stockByProductId)
+        : null;
+    // Infinity means every component is untracked — same "nothing to cap
+    // against" case as an untracked plain product, reported as the
+    // requested quantity so the frontend never renders a bogus number.
+    const availableQuantity =
+      componentMax !== null
+        ? componentMax === Infinity
+          ? resolved.quantity
+          : componentMax
+        : product.inventory.trackInventory
+          ? product.inventory.stockQuantity
+          : resolved.quantity;
 
     return {
       productId: line.productId,
       name: product.name,
       sku: product.sku,
       imageUrl: imageUrls.get(line.productId) ?? null,
-      quantity: line.quantity,
-      unitPrice: product.pricing.sellingPrice,
+      quantity: resolved.quantity,
+      unitPrice: resolved.unitPrice,
       mrp: product.pricing.mrp,
-      discount,
-      discountPercentage,
-      lineTotal: lineTotalFor(product.pricing.sellingPrice, line.quantity),
+      discount: resolved.discount,
+      discountPercentage: resolved.discountPercentage,
+      lineTotal: resolved.lineTotal,
+      selectionType: resolved.selectionType,
+      packBreakdown: resolved.packBreakdown,
       unavailable,
       insufficientStock,
-      // Meaningless for untracked products, reported as the requested
-      // quantity so the frontend never renders a bogus "0 available".
-      availableQuantity: tracked ? product.inventory.stockQuantity : line.quantity,
+      availableQuantity,
     };
   });
 
@@ -300,13 +565,22 @@ export async function createCheckout(
 
   const products = await loadProducts(input.items);
   const imageUrls = await getPrimaryImageUrlMap(input.items.map((i) => i.productId));
-  const shippingPolicy = await getShippingPolicy();
+  const [shippingPolicy, defaultStrategy, categories] = await Promise.all([
+    getShippingPolicy(),
+    getDefaultPackRecommendationStrategy(),
+    loadCategoryPackConfigs(
+      [...products.values()].filter((p) => input.items.some((i) => i.productId === p._id.toString() && i.packSelection)).map((p) => p.categoryId)
+    ),
+  ]);
 
   const reserved: ReservedLine[] = [];
   const orderItems: OrderItem[] = [];
 
   try {
-    for (const line of input.items) {
+    // Pass 1: resolve every line's pricing + inventory requirement first —
+    // no reservation yet. Throws immediately on a vanished/inactive product
+    // or an invalid pack selection, same as before this feature existed.
+    const resolvedLines = input.items.map((line) => {
       const product = products.get(line.productId);
       if (!product || product.status !== "ACTIVE") {
         throw new AppError(
@@ -314,37 +588,78 @@ export async function createCheckout(
           409
         );
       }
+      const resolved = resolveLine(line, product, categories.get(product.categoryId.toString()) ?? null, defaultStrategy);
+      return { line, product, resolved };
+    });
 
-      if (product.inventory.trackInventory) {
-        // The read above is only for pricing/naming — this conditional
-        // update is the actual reservation, and a null result means someone
-        // else took the stock between the two (race lost, not a stale read).
-        const claimed = await Product.findOneAndUpdate(
-          { _id: line.productId, "inventory.stockQuantity": { $gte: line.quantity } },
-          { $inc: { "inventory.stockQuantity": -line.quantity } }
-        ).exec();
-        if (!claimed) {
-          throw new AppError(`Insufficient stock for ${product.name}`, 409);
-        }
-        reserved.push({ productId: line.productId, quantity: line.quantity });
+    // Pass 2: aggregate every line's requirement into one combined demand
+    // per component product — this is what makes two lines/packs sharing a
+    // component (e.g. Navadhanya sold both loose and inside a combo in the
+    // same order) reserve against their true combined total rather than
+    // racing two independent checks against the same stock (spec §17).
+    const combinedRequirement = mergeResolvedComponents(...resolvedLines.map((r) => r.resolved.inventoryRequirement));
+    const knownComponentIds = new Set(combinedRequirement.map((c) => c.productId));
+    const extraComponentIds = [...knownComponentIds].filter((id) => !products.has(id));
+    const componentStock = await loadComponentStock(extraComponentIds);
+    const stockByProductId = new Map<string, ComponentStock>([
+      ...[...products.entries()].map(([id, p]) => [id, { name: p.name, sku: p.sku, ...p.inventory }] as const),
+      ...componentStock.entries(),
+    ]);
+
+    // Pass 3: reserve each distinct component exactly once, for its
+    // combined total — same atomic $gte-guarded decrement as before this
+    // feature existed (no DB transactions available; see this file's
+    // header comment on `ReservedLine`), just keyed by component productId
+    // instead of by cart-line productId. A null result (lost the race, or a
+    // component that's disappeared) throws, and the outer catch releases
+    // everything already reserved — no partial deduction survives (spec §17).
+    for (const requirement of combinedRequirement) {
+      const stock = stockByProductId.get(requirement.productId);
+      if (!stock) {
+        // The component product itself no longer exists — never silently
+        // skip a required component, that would ship an order with pieces
+        // missing.
+        throw new AppError("One or more required products are no longer available", 409);
       }
+      if (!stock.trackInventory) continue;
+      const claimed = await Product.findOneAndUpdate(
+        { _id: requirement.productId, "inventory.stockQuantity": { $gte: requirement.quantity } },
+        { $inc: { "inventory.stockQuantity": -requirement.quantity } }
+      ).exec();
+      if (!claimed) {
+        throw new AppError(`Insufficient stock for ${stock.name}`, 409);
+      }
+      reserved.push({ productId: requirement.productId, quantity: requirement.quantity });
+    }
 
-      const { discount, discountPercentage } = computeDiscount(
-        product.pricing.mrp,
-        product.pricing.sellingPrice
-      );
+    // Pass 4: build the order line items, now that reservation succeeded.
+    for (const { line, product, resolved } of resolvedLines) {
+      const inventoryComponents: OrderInventoryComponentLine[] | undefined = resolved.usesComponentTracking
+        ? resolved.inventoryRequirement.map((r) => {
+            const stock = stockByProductId.get(r.productId);
+            return {
+              productId: new mongoose.Types.ObjectId(r.productId),
+              productName: stock?.name ?? "",
+              productSku: stock?.sku ?? "",
+              quantity: r.quantity,
+            };
+          })
+        : undefined;
 
       orderItems.push({
         productId: product._id,
         name: product.name,
         sku: product.sku,
         imageUrl: imageUrls.get(line.productId) ?? null,
-        quantity: line.quantity,
-        unitPrice: product.pricing.sellingPrice,
+        quantity: resolved.quantity,
+        unitPrice: resolved.unitPrice,
         mrp: product.pricing.mrp,
-        discount,
-        discountPercentage,
-        lineTotal: lineTotalFor(product.pricing.sellingPrice, line.quantity),
+        discount: resolved.discount,
+        discountPercentage: resolved.discountPercentage,
+        lineTotal: resolved.lineTotal,
+        selectionType: resolved.selectionType,
+        packBreakdown: resolved.packBreakdown,
+        inventoryComponents,
       });
     }
 
@@ -509,18 +824,43 @@ export async function validateCouponForCart(
   code: string,
   items: RequestedLine[]
 ) {
-  const [products, shippingPolicy] = await Promise.all([
-    loadProducts(items),
+  const products = await loadProducts(items);
+  const [shippingPolicy, defaultStrategy, categories] = await Promise.all([
     getShippingPolicy(),
+    getDefaultPackRecommendationStrategy(),
+    loadCategoryPackConfigs(
+      [...products.values()].filter((p) => items.some((i) => i.productId === p._id.toString() && i.packSelection)).map((p) => p.categoryId)
+    ),
   ]);
 
-  const eligibleLineTotals: number[] = [];
+  const resolvedForEligibility: { resolved: ResolvedLine }[] = [];
   for (const line of items) {
     const product = products.get(line.productId);
     if (!product || product.status !== "ACTIVE") continue;
-    if (product.inventory.trackInventory && product.inventory.stockQuantity < line.quantity) continue;
-    eligibleLineTotals.push(lineTotalFor(product.pricing.sellingPrice, line.quantity));
+    try {
+      resolvedForEligibility.push({ resolved: resolveLine(line, product, categories.get(product.categoryId.toString()) ?? null, defaultStrategy) });
+    } catch {
+      continue;
+    }
   }
+
+  // Same cross-line aggregate check previewCheckout uses — a component two
+  // lines share must be checked against their combined demand, not each
+  // line independently.
+  const combinedRequirement = mergeResolvedComponents(...resolvedForEligibility.map((r) => r.resolved.inventoryRequirement));
+  const knownComponentIds = new Set(combinedRequirement.map((c) => c.productId));
+  const extraComponentIds = [...knownComponentIds].filter((id) => !products.has(id));
+  const componentStock = await loadComponentStock(extraComponentIds);
+  const stockByProductId = new Map<string, ComponentStock>([
+    ...[...products.entries()].map(([id, p]) => [id, { name: p.name, sku: p.sku, ...p.inventory }] as const),
+    ...componentStock.entries(),
+  ]);
+  const { shortfalls } = validateInventoryAvailability(combinedRequirement, 1, stockByProductId);
+  const shortfallSet = new Set(shortfalls);
+
+  const eligibleLineTotals = resolvedForEligibility
+    .filter(({ resolved }) => !resolved.inventoryRequirement.some((r) => shortfallSet.has(r.productId)))
+    .map(({ resolved }) => resolved.lineTotal);
 
   const subtotal = eligibleLineTotals.reduce((sum, v) => sum + Math.round(v * 100), 0) / 100;
 

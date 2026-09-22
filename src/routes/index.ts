@@ -17,6 +17,7 @@ import brandPublicRoutes from "../modules/brand/brandPublic.routes";
 import wishlistRoutes from "../modules/wishlist/wishlist.routes";
 import addressRoutes from "../modules/address/address.routes";
 import checkoutRoutes from "../modules/checkout/checkout.routes";
+import cartPackRoutes from "../modules/checkout/cartPack.routes";
 import couponRoutes from "../modules/coupon/coupon.routes";
 import adminCouponRoutes from "../modules/coupon/adminCoupon.routes";
 import adminInstagramPostRoutes from "../modules/instagramPost/instagramPost.routes";
@@ -81,6 +82,11 @@ router.use("/admin", adminDashboardRoutes);
 // `publicCache` marks the GET responses on these unauthenticated catalog
 // routes as CDN/browser-cacheable (see the middleware). Not applied to
 // /inquiries — those are POST-only form submissions, nothing to cache.
+// Pack recommendation is advisory-only (no stock/order mutation) and must
+// work for anonymous shoppers too, so it lives alongside the other
+// unauthenticated catalog routes rather than under the authenticated
+// /checkout router below (decision #6, checkout.pack plan).
+router.use("/cart", cartPackRoutes);
 router.use("/products", publicCache, productPublicRoutes);
 router.use("/categories", publicCache, categoryPublicRoutes);
 router.use("/collections", publicCache, collectionPublicRoutes);

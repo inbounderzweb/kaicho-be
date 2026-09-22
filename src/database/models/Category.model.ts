@@ -1,4 +1,5 @@
 import { Schema, model, Document, Types } from "mongoose";
+import { PackConfig, PackConfigSchema } from "./PackConfig.schema";
 
 export interface CategoryDocument extends Document {
   name: string;
@@ -9,6 +10,10 @@ export interface CategoryDocument extends Document {
   imageMediaId?: Types.ObjectId;
   isActive: boolean;
   sortOrder: number;
+  // A product may opt in to inheriting this instead of defining its own
+  // packs (Product.packConfig.mode === "INHERIT_CATEGORY") — see
+  // PackConfig.schema.ts and packCombination.service.ts#resolveEffectivePackConfig.
+  packConfig?: PackConfig;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -23,6 +28,8 @@ const CategorySchema = new Schema<CategoryDocument>(
     imageMediaId: { type: Schema.Types.ObjectId, ref: "Media" },
     isActive: { type: Boolean, default: true },
     sortOrder: { type: Number, default: 0 },
+    // `default: undefined` — same reasoning as Product.packConfig.
+    packConfig: { type: PackConfigSchema, default: undefined },
   },
   { timestamps: true }
 );

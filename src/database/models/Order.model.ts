@@ -102,6 +102,38 @@ export const ORDER_STATUSES_HOLDING_STOCK: OrderStatus[] = [
   "DELIVERED",
 ];
 
+// A frozen copy of exactly which packs made up a PACK-selection line, in the
+// same "snapshot, never re-derive from live config" spirit as the rest of
+// this file — a later admin edit/delete of the pack must never change what
+// this order shows or how much it charged (spec §20). `quantity` on the
+// parent OrderItem is always the total base units across every pack line
+// (packQuantity * packCount, summed) — never a "3 packs" count — which is
+// exactly what keeps restoreStockForOrder/checkout's stock math working
+// unmodified for pack orders (see checkout.service.ts).
+export interface OrderPackLine {
+  packId: Types.ObjectId;
+  packName: string;
+  packQuantity: number;
+  packCount: number;
+  packPrice: number;
+}
+
+export const ORDER_ITEM_SELECTION_TYPES = ["UNIT", "PACK"] as const;
+export type OrderItemSelectionType = (typeof ORDER_ITEM_SELECTION_TYPES)[number];
+
+// A frozen copy of exactly which products' stock this line actually
+// deducted — independent of `packBreakdown` (which is about PRICE
+// composition, not inventory: a plain UNIT line of a combo product has no
+// pack breakdown at all, yet still has component deductions). Absent means
+// this line deducted its own `productId` by `quantity`, the pre-this-feature
+// behaviour restoreStockForOrder still falls back to.
+export interface OrderInventoryComponentLine {
+  productId: Types.ObjectId;
+  productName: string;
+  productSku: string;
+  quantity: number;
+}
+
 export interface OrderItem {
   productId: Types.ObjectId;
   name: string;
@@ -113,6 +145,11 @@ export interface OrderItem {
   discount: number;
   discountPercentage: number;
   lineTotal: number;
+  // Both optional/absent on every order placed before this feature existed,
+  // and on any new UNIT-selection line — see OrderItemSchema's `default`s.
+  selectionType?: OrderItemSelectionType;
+  packBreakdown?: OrderPackLine[];
+  inventoryComponents?: OrderInventoryComponentLine[];
 }
 
 export interface OrderPricing {
@@ -219,6 +256,27 @@ export interface OrderDocument extends Document {
   updatedAt: Date;
 }
 
+const OrderPackLineSchema = new Schema<OrderPackLine>(
+  {
+    packId: { type: Schema.Types.ObjectId, required: true },
+    packName: { type: String, required: true },
+    packQuantity: { type: Number, required: true, min: 1 },
+    packCount: { type: Number, required: true, min: 1 },
+    packPrice: { type: Number, required: true, min: 0 },
+  },
+  { _id: false }
+);
+
+const OrderInventoryComponentLineSchema = new Schema<OrderInventoryComponentLine>(
+  {
+    productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+    productName: { type: String, required: true },
+    productSku: { type: String, required: true },
+    quantity: { type: Number, required: true, min: 1 },
+  },
+  { _id: false }
+);
+
 const OrderItemSchema = new Schema<OrderItem>(
   {
     productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
@@ -231,6 +289,11 @@ const OrderItemSchema = new Schema<OrderItem>(
     discount: { type: Number, required: true, min: 0, default: 0 },
     discountPercentage: { type: Number, required: true, min: 0, default: 0 },
     lineTotal: { type: Number, required: true, min: 0 },
+    selectionType: { type: String, enum: ORDER_ITEM_SELECTION_TYPES, default: "UNIT" },
+    // `default: undefined` — same reasoning as OrderPaymentSchema: most
+    // lines are plain UNIT selections and have no pack breakdown at all.
+    packBreakdown: { type: [OrderPackLineSchema], default: undefined },
+    inventoryComponents: { type: [OrderInventoryComponentLineSchema], default: undefined },
   },
   { _id: false }
 );

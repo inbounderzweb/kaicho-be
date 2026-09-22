@@ -42,7 +42,14 @@ afterAll(async () => {
 describe("settings.service (unit)", () => {
   it("materialises the singleton with the shipped defaults on first read", async () => {
     const policy = await getShippingPolicy();
-    expect(policy).toEqual({ ...STORE_SETTINGS_DEFAULTS });
+    // getShippingPolicy() only ever returns the shipping-related subset (see
+    // its own narrow return type) — STORE_SETTINGS_DEFAULTS carries other
+    // knobs too (e.g. defaultPackRecommendationStrategy), so this compares
+    // shipping fields specifically rather than the whole defaults object.
+    expect(policy).toEqual({
+      freeShippingThreshold: STORE_SETTINGS_DEFAULTS.freeShippingThreshold,
+      flatShippingFee: STORE_SETTINGS_DEFAULTS.flatShippingFee,
+    });
     expect(await StoreSettings.countDocuments({})).toBe(1);
   });
 

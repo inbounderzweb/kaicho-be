@@ -97,6 +97,28 @@ export function toOrderDto(doc: OrderDocument) {
       discount: item.discount,
       discountPercentage: item.discountPercentage,
       lineTotal: item.lineTotal,
+      // Absent on every order placed before this feature existed, and on
+      // any plain UNIT line — additive, nothing downstream that reads this
+      // DTO needs to change to keep working.
+      selectionType: item.selectionType ?? "UNIT",
+      packBreakdown: item.packBreakdown?.map((line) => ({
+        packId: line.packId.toString(),
+        packName: line.packName,
+        packQuantity: line.packQuantity,
+        packCount: line.packCount,
+        packPrice: line.packPrice,
+      })),
+      // Which real products' stock this line actually deducted — absent
+      // unless inventory tracking was enabled for this line at checkout
+      // time (see checkout.service.ts). Independent of packBreakdown: a
+      // plain UNIT purchase of a tracking-enabled combo has this with no
+      // pack breakdown at all.
+      inventoryComponents: item.inventoryComponents?.map((c) => ({
+        productId: c.productId.toString(),
+        productName: c.productName,
+        productSku: c.productSku,
+        quantity: c.quantity,
+      })),
     })),
     pricing: {
       subtotal: doc.pricing.subtotal,
@@ -202,19 +224,33 @@ export function toGa4PurchaseParams(doc: OrderDocument): Ga4PurchaseParams {
 // product deleted since the order was placed must not block the cancellation
 // itself — the customer's order state matters more than a stock counter on a
 // row that may not exist any more.
+//
+// A line with an `inventoryComponents` snapshot (checkout.service.ts —
+// inventory tracking enabled at checkout time) deducted from those
+// component products, not from `item.productId` itself, so restoring it has
+// to reverse the SAME set — restoring `item.productId` instead would credit
+// back stock nobody actually took. Every line placed before this feature
+// existed, and every line for an untracked product, has no such snapshot
+// and falls through to the original productId/quantity restore unchanged.
 export async function restoreStockForOrder(doc: OrderDocument): Promise<void> {
   for (const item of doc.items) {
-    try {
-      await Product.updateOne(
-        { _id: item.productId, "inventory.trackInventory": true },
-        { $inc: { "inventory.stockQuantity": item.quantity } }
-      );
-    } catch (err) {
-      console.error("Stock restore failed", {
-        orderNumber: doc.orderNumber,
-        productId: item.productId.toString(),
-        reason: err instanceof Error ? err.message : "unknown error",
-      });
+    const restores = item.inventoryComponents?.length
+      ? item.inventoryComponents.map((c) => ({ productId: c.productId, quantity: c.quantity }))
+      : [{ productId: item.productId, quantity: item.quantity }];
+
+    for (const restore of restores) {
+      try {
+        await Product.updateOne(
+          { _id: restore.productId, "inventory.trackInventory": true },
+          { $inc: { "inventory.stockQuantity": restore.quantity } }
+        );
+      } catch (err) {
+        console.error("Stock restore failed", {
+          orderNumber: doc.orderNumber,
+          productId: restore.productId.toString(),
+          reason: err instanceof Error ? err.message : "unknown error",
+        });
+      }
     }
   }
 }

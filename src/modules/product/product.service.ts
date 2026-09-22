@@ -9,10 +9,25 @@ import {
   Media,
   MediaDocument,
   MediaUsage,
+  InventoryTracking,
 } from "../../database/models";
 import { attachMediaToEntity, detachMedia } from "../media/media.service";
 import { getStorageProvider } from "../media/storage";
 import { slugify } from "../../common/utils/slugify";
+import {
+  resolveEffectivePackConfig,
+  getApplicablePacks,
+  computePackDiscount,
+  computePackAvailability,
+} from "./packCombination.service";
+import {
+  resolveEffectiveComponents,
+  calculateMaximumAvailableQuantity,
+  assertAndConsolidateComponents,
+  type ResolvedComponent,
+} from "./inventoryTracking.service";
+import { resolveRelatedCombo, toRelatedComboSettingsDto, type RelatedComboSettingsDto } from "./relatedCombo.service";
+import { getDefaultPackRecommendationStrategy } from "../settings/settings.service";
 import type { CreateProductInput, UpdateProductInput } from "./product.validation";
 
 const storage = getStorageProvider();
@@ -517,6 +532,88 @@ export async function updateProductById(id: string, patch: UpdateProductInput, a
   return getProductById(id);
 }
 
+// ---- Inventory Tracking (component-based, spec: Admin-Configured Inventory Tracking) ----
+// A product-level sibling of pack-config's settings endpoint
+// (pack.service.ts#getPackConfigSettings/updatePackConfigSettings) — governs
+// what a PLAIN/base purchase of this product deducts. Same
+// Object.assign-in-place pattern updateProductById uses for
+// pricing/inventory above; `inventoryTracking` may not exist yet, so it's
+// vivified on first write the same way packConfig is.
+export interface InventoryTrackingSettingsDto {
+  enabled: boolean;
+  components: { productId: string; quantity: number }[];
+}
+
+async function getProductForInventoryTracking(id: string): Promise<ProductDocument> {
+  if (!isValidObjectId(id)) throw new AppError("Product not found", 404);
+  const doc = await Product.findById(id).exec();
+  if (!doc) throw new AppError("Product not found", 404);
+  return doc;
+}
+
+export async function getInventoryTrackingSettings(id: string): Promise<InventoryTrackingSettingsDto> {
+  const doc = await getProductForInventoryTracking(id);
+  const tracking = doc.inventoryTracking;
+  return {
+    enabled: tracking?.enabled ?? false,
+    components: (tracking?.components ?? []).map((c) => ({ productId: c.productId.toString(), quantity: c.quantity })),
+  };
+}
+
+export async function updateInventoryTrackingSettings(
+  id: string,
+  patch: { enabled?: boolean; components?: { productId: string; quantity: number }[] }
+): Promise<InventoryTrackingSettingsDto> {
+  const doc = await getProductForInventoryTracking(id);
+  if (!doc.inventoryTracking) {
+    doc.inventoryTracking = { enabled: false, components: [] } as unknown as ProductDocument["inventoryTracking"];
+  }
+  if (patch.enabled !== undefined) doc.inventoryTracking!.enabled = patch.enabled;
+  if (patch.components !== undefined) {
+    doc.inventoryTracking!.components = await assertAndConsolidateComponents(patch.components);
+  }
+  await doc.save();
+  return getInventoryTrackingSettings(id);
+}
+
+// ---- Related Combo/Bundle Suggestion ----
+// A sibling settings pair to the two above — same shared product lookup,
+// same Object.assign-in-place pattern. See relatedCombo.service.ts for the
+// AUTO/MANUAL/NONE resolution this configures.
+export async function getRelatedComboSettings(id: string): Promise<RelatedComboSettingsDto> {
+  const doc = await getProductForInventoryTracking(id);
+  return toRelatedComboSettingsDto(doc);
+}
+
+export async function updateRelatedComboSettings(
+  id: string,
+  patch: { mode?: "AUTO" | "MANUAL" | "NONE"; comboProductId?: string | null }
+): Promise<RelatedComboSettingsDto> {
+  const doc = await getProductForInventoryTracking(id);
+
+  if (patch.comboProductId) {
+    if (patch.comboProductId === id) {
+      throw new AppError("A product can't be its own related combo", 400);
+    }
+    const target = await Product.exists({ _id: patch.comboProductId, "inventoryTracking.enabled": true, "inventoryTracking.components.productId": id });
+    if (!target) {
+      throw new AppError("Selected combo must include this product in its inventory components", 400);
+    }
+  }
+
+  if (!doc.relatedCombo) {
+    doc.relatedCombo = { mode: "AUTO" } as unknown as ProductDocument["relatedCombo"];
+  }
+  if (patch.mode !== undefined) doc.relatedCombo!.mode = patch.mode;
+  if (patch.comboProductId !== undefined) {
+    doc.relatedCombo!.comboProductId = patch.comboProductId
+      ? new mongoose.Types.ObjectId(patch.comboProductId)
+      : undefined;
+  }
+  await doc.save();
+  return getRelatedComboSettings(id);
+}
+
 // ---- Duplicate ----
 // Spec §27: implemented because it fits the existing architecture cleanly.
 // The clone gets fresh unique slug/SKU, always starts as DRAFT regardless of
@@ -799,6 +896,7 @@ interface PublicListDoc {
   brandId: mongoose.Types.ObjectId;
   pricing: { mrp: number; sellingPrice: number };
   inventory: { stockQuantity: number; lowStockThreshold: number; trackInventory: boolean };
+  inventoryTracking?: InventoryTracking;
   isFeatured: boolean;
   createdAt: Date;
 }
@@ -806,26 +904,69 @@ interface PublicListDoc {
 // Shared by getPublicProductList and getRelatedProducts — one place doing the
 // batch category/brand/primary-image lookups (2-3 queries total, never N+1)
 // and shaping the customer-safe summary DTO.
+//
+// Component-tracking products (spec: Admin-Configured Inventory Tracking)
+// need one more batch lookup here: their own `inventory.stockQuantity` is
+// unused/stale once tracking is enabled (getPublicProductBySlug's detail
+// DTO already accounts for this — this list-hydration path was the one
+// spot that still read the raw field directly, which is exactly what made
+// a combo with plenty of component stock still show as "out of stock" on
+// any listing/grid/related-products view even though its own detail page
+// was correct).
 async function hydratePublicListItems(docs: PublicListDoc[]) {
   const productIds = docs.map((d) => d._id);
   const categoryIds = [...new Set(docs.map((d) => d.categoryId.toString()))];
   const brandIds = [...new Set(docs.map((d) => d.brandId.toString()))];
 
-  const [categories, brands, imageMap] = await Promise.all([
+  const trackedDocs = docs.filter((d) => d.inventoryTracking?.enabled && d.inventoryTracking.components.length > 0);
+  const componentProductIds = new Set<string>();
+  for (const d of trackedDocs) {
+    d.inventoryTracking!.components.forEach((c) => componentProductIds.add(c.productId.toString()));
+  }
+  // A tracked doc's own id is always a candidate lookup key too (self-
+  // referencing components, or just so the map has every id docs.map()
+  // below might ask for) — cheap to include, avoids a second branch.
+  docs.forEach((d) => componentProductIds.add(d._id.toString()));
+
+  const [categories, brands, imageMap, componentStockDocs] = await Promise.all([
     categoryIds.length ? Category.find({ _id: { $in: categoryIds } }).select("name slug").lean() : [],
     brandIds.length ? Brand.find({ _id: { $in: brandIds } }).select("name slug").lean() : [],
     primaryMediaMap(productIds),
+    trackedDocs.length
+      ? Product.find({ _id: { $in: [...componentProductIds] } }).select("inventory").lean()
+      : [],
   ]);
   const categoryMap = new Map(categories.map((c) => [c._id.toString(), c]));
   const brandMap = new Map(brands.map((b) => [b._id.toString(), b]));
+  const stockByProductId = new Map<string, { stockQuantity: number; trackInventory: boolean }>(
+    componentStockDocs.map((p) => [p._id.toString(), { stockQuantity: p.inventory.stockQuantity, trackInventory: p.inventory.trackInventory }])
+  );
+  // Every doc's own stock is already in hand from the list query itself —
+  // no reason to rely on it appearing in componentStockDocs (which is only
+  // fetched at all when at least one doc in the page is tracked).
+  docs.forEach((d) => {
+    if (!stockByProductId.has(d._id.toString())) {
+      stockByProductId.set(d._id.toString(), { stockQuantity: d.inventory.stockQuantity, trackInventory: d.inventory.trackInventory });
+    }
+  });
 
   return docs.map((d) => {
     const category = categoryMap.get(d.categoryId.toString());
     const brand = brandMap.get(d.brandId.toString());
     const { discountPercentage } = computeDiscount(d.pricing.mrp, d.pricing.sellingPrice);
-    const inStock = !d.inventory.trackInventory || d.inventory.stockQuantity > 0;
-    const lowStock =
-      d.inventory.trackInventory && d.inventory.stockQuantity > 0 && d.inventory.stockQuantity <= d.inventory.lowStockThreshold;
+
+    let stockQuantity: number;
+    let trackInventory: boolean;
+    if (d.inventoryTracking?.enabled && d.inventoryTracking.components.length > 0) {
+      const max = calculateMaximumAvailableQuantity(resolveEffectiveComponents(d), stockByProductId);
+      trackInventory = max !== Infinity;
+      stockQuantity = max === Infinity ? 999_999 : max;
+    } else {
+      stockQuantity = d.inventory.stockQuantity;
+      trackInventory = d.inventory.trackInventory;
+    }
+    const inStock = !trackInventory || stockQuantity > 0;
+    const lowStock = trackInventory && stockQuantity > 0 && stockQuantity <= d.inventory.lowStockThreshold;
 
     return {
       productId: d._id.toString(),
@@ -844,7 +985,7 @@ async function hydratePublicListItems(docs: PublicListDoc[]) {
       // so the frontend's quantity-selector cap only applies to products
       // that actually track stock (an untracked product's stockQuantity is
       // not meaningful and must never gate the UI).
-      inventory: { inStock, stockQuantity: d.inventory.stockQuantity, lowStock, trackInventory: d.inventory.trackInventory },
+      inventory: { inStock, stockQuantity, lowStock, trackInventory },
     };
   });
 }
@@ -942,7 +1083,7 @@ export async function getPublicProductList(params: PublicProductListParams) {
 
   const [docs, total] = await Promise.all([
     Product.find(filter)
-      .select("name slug shortDescription categoryId brandId pricing inventory isFeatured createdAt")
+      .select("name slug shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
       .sort(sortSpec)
       .skip((page - 1) * pageSize)
       .limit(pageSize)
@@ -967,18 +1108,101 @@ export async function getPublicProductBySlug(slug: string) {
   const doc = await Product.findOne({ slug, status: { $in: PUBLIC_STATUSES } }).exec();
   if (!doc) return null;
 
-  const [category, brand, images] = await Promise.all([
-    Category.findById(doc.categoryId).select("name slug").lean(),
+  const [category, brand, images, defaultPackStrategy, relatedCombo] = await Promise.all([
+    Category.findById(doc.categoryId).select("name slug packConfig").lean(),
     Brand.findById(doc.brandId).select("name slug").lean(),
     getProductImages(doc._id.toString()),
+    getDefaultPackRecommendationStrategy(),
+    resolveRelatedCombo(doc),
   ]);
 
   const { discountPercentage } = computeDiscount(doc.pricing.mrp, doc.pricing.sellingPrice);
-  const inStock = !doc.inventory.trackInventory || doc.inventory.stockQuantity > 0;
+
+  // Active packs only, no cost/internal fields — this is display data for
+  // the PDP's initial render; /cart/validate-pack (cartPack.service.ts)
+  // remains the authority once the customer actually picks a quantity.
+  const effectivePackConfig = resolveEffectivePackConfig(doc, category, defaultPackStrategy);
+  const applicablePacks = effectivePackConfig ? getApplicablePacks(effectivePackConfig).sort((a, b) => a.sortOrder - b.sortOrder) : [];
+
+  // Batch-load stock for every distinct product this listing's own
+  // inventory tracking AND any pack's component override might reference —
+  // a single extra query covers the whole page, not one per pack. Empty for
+  // the overwhelmingly common case (no component tracking configured at
+  // all), so this never costs anything for a plain product.
+  const componentProductIds = new Set<string>();
+  if (doc.inventoryTracking?.enabled) {
+    doc.inventoryTracking.components.forEach((c) => componentProductIds.add(c.productId.toString()));
+  }
+  for (const pack of applicablePacks) {
+    const original = effectivePackConfig?.packs.find((p) => p._id.toString() === pack.packId);
+    if (original?.useComponentInventory) {
+      original.inventoryComponents.forEach((c) => componentProductIds.add(c.productId.toString()));
+    }
+  }
+  const componentStockDocs = componentProductIds.size
+    ? await Product.find({ _id: { $in: [...componentProductIds] } }).select("inventory").lean()
+    : [];
+  const stockByProductId = new Map<string, { stockQuantity: number; trackInventory: boolean }>([
+    [doc._id.toString(), { stockQuantity: doc.inventory.stockQuantity, trackInventory: doc.inventory.trackInventory }],
+    ...componentStockDocs.map((d) => [d._id.toString(), { stockQuantity: d.inventory.stockQuantity, trackInventory: d.inventory.trackInventory }] as const),
+  ]);
+
+  // Infinity means every referenced component is itself untracked — nothing
+  // meaningfully caps this combo. `doc.inventory.stockQuantity` would be the
+  // wrong fallback here (it's an unused, possibly-stale number once
+  // component tracking is on); a large constant reads as "effectively
+  // unlimited" without returning a non-JSON-serialisable Infinity.
+  const UNLIMITED = 999_999;
+  function maxAvailable(components: ResolvedComponent[]): number {
+    const max = calculateMaximumAvailableQuantity(components, stockByProductId);
+    return max === Infinity ? UNLIMITED : max;
+  }
+
+  const packOptions = effectivePackConfig
+    ? applicablePacks.map((pack) => {
+        const original = effectivePackConfig.packs.find((p) => p._id.toString() === pack.packId)!;
+        const { discount, discountPercentage: packDiscountPercentage } = computePackDiscount(
+          original,
+          doc.pricing.mrp
+        );
+        return {
+          packId: pack.packId,
+          name: pack.name,
+          quantity: pack.quantity,
+          price: pack.price,
+          isDefault: pack.isDefault,
+          sortOrder: pack.sortOrder,
+          discount,
+          discountPercentage: packDiscountPercentage,
+          availableStock:
+            original.useComponentInventory && original.inventoryComponents.length > 0
+              ? maxAvailable(resolveEffectiveComponents(doc, original))
+              : computePackAvailability(original, doc.inventory.stockQuantity),
+        };
+      })
+    : [];
+
+  // Component-tracking products have no stock of their own — their
+  // "quantity" is only ever as available as their tightest component (spec
+  // §8/§9), and whether that's meaningfully "tracked" depends on whether
+  // any component itself is (never the product's own, now-unused,
+  // trackInventory flag). Every other product is byte-for-byte the same
+  // computation as before this feature existed.
+  let effectiveStockQuantity: number;
+  let effectiveTrackInventory: boolean;
+  if (doc.inventoryTracking?.enabled && doc.inventoryTracking.components.length > 0) {
+    const max = calculateMaximumAvailableQuantity(resolveEffectiveComponents(doc), stockByProductId);
+    effectiveTrackInventory = max !== Infinity;
+    effectiveStockQuantity = max === Infinity ? UNLIMITED : max;
+  } else {
+    effectiveTrackInventory = doc.inventory.trackInventory;
+    effectiveStockQuantity = doc.inventory.stockQuantity;
+  }
+  const inStock = !effectiveTrackInventory || effectiveStockQuantity > 0;
   const lowStock =
-    doc.inventory.trackInventory &&
-    doc.inventory.stockQuantity > 0 &&
-    doc.inventory.stockQuantity <= doc.inventory.lowStockThreshold;
+    effectiveTrackInventory &&
+    effectiveStockQuantity > 0 &&
+    effectiveStockQuantity <= doc.inventory.lowStockThreshold;
 
   return {
     productId: doc._id.toString(),
@@ -997,7 +1221,9 @@ export async function getPublicProductBySlug(slug: string) {
       sellingPrice: doc.pricing.sellingPrice,
       discountPercentage,
     },
-    inventory: { inStock, stockQuantity: doc.inventory.stockQuantity, lowStock, trackInventory: doc.inventory.trackInventory },
+    inventory: { inStock, stockQuantity: effectiveStockQuantity, lowStock, trackInventory: effectiveTrackInventory },
+    packOptions,
+    relatedCombo,
     seo: {
       title: doc.seo.title,
       description: doc.seo.description,
@@ -1019,7 +1245,7 @@ export async function getRelatedProducts(slug: string, limit = 8) {
   if (!source) return [];
 
   const base = { status: { $in: PUBLIC_STATUSES }, _id: { $ne: source._id } };
-  const projection = "name slug shortDescription categoryId brandId pricing inventory isFeatured createdAt";
+  const projection = "name slug shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt";
 
   const sameCategory = await Product.find({ ...base, categoryId: source.categoryId })
     .select(projection)
@@ -1060,7 +1286,7 @@ export async function getProductSummariesByIds(productIds: string[]) {
   if (!validIds.length) return [];
 
   const docs = await Product.find({ _id: { $in: validIds }, status: { $in: PUBLIC_STATUSES } })
-    .select("name slug shortDescription categoryId brandId pricing inventory isFeatured createdAt")
+    .select("name slug shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
     .lean();
 
   return hydratePublicListItems(docs as unknown as PublicListDoc[]);
