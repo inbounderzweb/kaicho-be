@@ -1,3 +1,4 @@
+import notificationRoutes from "../modules/notification/notification.routes";
 import { Router } from "express";
 import healthRoutes from "../modules/health/health.routes";
 import versionRoutes from "../modules/version/version.routes";
@@ -60,6 +61,7 @@ router.use("/admin/blogs", adminBlogRoutes);
 router.use("/admin/blog-categories", adminBlogCategoryRoutes);
 router.use("/admin/blog-tags", adminBlogTagRoutes);
 router.use("/admin/inquiries", adminInquiryRoutes);
+router.use("/admin/notifications", notificationRoutes);
 // Same ordering rule as the admin routers above — mounted before the generic
 // "/admin" dashboard router so it wins the match.
 router.use("/admin/settings", adminSettingsRoutes);

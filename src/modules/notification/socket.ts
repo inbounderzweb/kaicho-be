@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from "http";
 import { Server as IOServer, type Socket } from "socket.io";
 import jwt from "jsonwebtoken";
+import { verifyNotificationToken } from "./token";
 import { env } from "../../config/env";
 import { User } from "../../database/models";
 import type { SessionPayload } from "../../common/middleware/requireAuth";
@@ -37,12 +38,15 @@ function readCookie(header: string | undefined, name: string): string | undefine
 // just another authenticated entry point into the app and must be gated the
 // same way, not a lighter one.
 async function authenticateAdminSocket(socket: Socket): Promise<boolean> {
-  const token = readCookie(socket.handshake.headers.cookie, env.cookieName);
+  const ticket = socket.handshake.auth?.token;
+  const token = typeof ticket === "string" ? ticket : readCookie(socket.handshake.headers.cookie, env.cookieName);
   if (!token) return false;
 
   let payload: SessionPayload;
   try {
-    payload = jwt.verify(token, env.jwtSecret) as SessionPayload;
+    payload = typeof ticket === "string"
+      ? verifyNotificationToken(token)
+      : jwt.verify(token, env.jwtSecret, { algorithms: ["HS256"] }) as SessionPayload;
   } catch {
     return false;
   }
