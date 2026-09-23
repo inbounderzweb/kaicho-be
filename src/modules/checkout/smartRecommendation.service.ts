@@ -6,12 +6,16 @@ import { mergeResolvedComponents, type ResolvedComponent } from "../product/inve
 import { getDefaultPackRecommendationStrategy } from "../settings/settings.service";
 import { getPrimaryImageUrlMap } from "../product/product.service";
 
-type SourceProduct = PricedProduct & Pick<ProductDocument, "slug" | "relatedCombo" | "sortOrder">;
-const fields = "name slug sku status categoryId pricing inventory packConfig inventoryTracking relatedCombo sortOrder";
+type SourceProduct = PricedProduct & Pick<ProductDocument, "slug" | "relatedCombo" | "sortOrder" | "shortDescription">;
+const fields = "name slug sku status categoryId pricing inventory packConfig inventoryTracking relatedCombo sortOrder shortDescription";
+// How many ranked alternatives the recommendation popup can list at once.
+// Bounded because each one costs its own stock check + image lookup.
+const MAX_RECOMMENDATIONS = 4;
 export interface SmartSelection {
   productId: string;
   name: string;
   slug: string;
+  shortDescription: string;
   image: string | null;
   mrp: number;
   quantity: number;
@@ -55,7 +59,8 @@ async function quote(context: Context, line: RequestedLine, cartRequirements: Re
   const product = context.products.get(line.productId)!;
   const images = await getPrimaryImageUrlMap([line.productId]);
   return {
-    productId: line.productId, name: product.name, slug: product.slug, image: images.get(line.productId) ?? null,
+    productId: line.productId, name: product.name, slug: product.slug, shortDescription: product.shortDescription,
+    image: images.get(line.productId) ?? null,
     mrp: product.pricing.mrp, quantity: result.quantity, price: result.lineTotal / result.quantity,
     totalPrice: result.lineTotal, selectionType: result.selectionType,
     packBreakdown: result.packBreakdown?.map(p => ({ ...p, packId: p.packId.toString() })),
@@ -137,11 +142,20 @@ export async function recommendSmartSelection(productId: string, quantity: numbe
       addPacks(candidate, true);
     }
   }
+  // Every candidate is quoted against the SAME `existing` cart requirement,
+  // never cumulatively — the customer picks at most one of these, so each is
+  // priced/stock-checked as if it were the only thing being added.
+  // `recommendation` stays the top-ranked one so existing callers (and the
+  // tests) keep working; `recommendations` is the list the popup renders.
+  const recommendations: SmartSelection[] = [];
+  const seen = new Set<string>();
   for (const candidate of rankCandidates(candidates, quantity, strategy)) {
+    if (recommendations.length >= MAX_RECOMMENDATIONS) break;
+    if (seen.has(candidate.key)) continue;
     try {
-      const recommendation = await quote(context, candidate.line, existing);
-      return { current, recommendation };
+      recommendations.push(await quote(context, candidate.line, existing));
+      seen.add(candidate.key);
     } catch (error) { if (!(error instanceof AppError)) throw error; }
   }
-  return { current, recommendation: null };
+  return { current, recommendation: recommendations[0] ?? null, recommendations };
 }
