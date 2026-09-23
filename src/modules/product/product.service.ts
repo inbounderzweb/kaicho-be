@@ -284,6 +284,8 @@ type LeanProduct = Pick<
   | "name"
   | "slug"
   | "sku"
+  | "weightPerPackGrams"
+  | "numberOfPacks"
   | "shortDescription"
   | "description"
   | "categoryId"
@@ -312,6 +314,8 @@ function toListItem(
     name: doc.name,
     slug: doc.slug,
     sku: doc.sku,
+    weightPerPackGrams: doc.weightPerPackGrams,
+    numberOfPacks: doc.numberOfPacks,
     shortDescription: doc.shortDescription,
     category: { id: doc.categoryId.toString(), name: categoryName ?? null },
     brand: { id: doc.brandId.toString(), name: brandName ?? null },
@@ -341,6 +345,8 @@ async function toDetailItem(doc: ProductDocument) {
     name: doc.name,
     slug: doc.slug,
     sku: doc.sku,
+    weightPerPackGrams: doc.weightPerPackGrams,
+    numberOfPacks: doc.numberOfPacks,
     shortDescription: doc.shortDescription,
     description: doc.description,
     category: category ? { id: category._id.toString(), name: category.name, slug: category.slug } : null,
@@ -398,6 +404,8 @@ export async function createProduct(input: CreateProductInput, actorId?: string)
     name: input.name,
     slug,
     sku,
+    weightPerPackGrams: input.weightPerPackGrams,
+    numberOfPacks: input.numberOfPacks,
     shortDescription: input.shortDescription,
     description: input.description,
     categoryId: input.categoryId,
@@ -463,6 +471,8 @@ export async function updateProductById(id: string, patch: UpdateProductInput, a
   }
 
   if (patch.name !== undefined) doc.name = patch.name;
+  if (patch.weightPerPackGrams !== undefined) doc.weightPerPackGrams = patch.weightPerPackGrams;
+  if (patch.numberOfPacks !== undefined) doc.numberOfPacks = patch.numberOfPacks;
   if (patch.shortDescription !== undefined) doc.shortDescription = patch.shortDescription;
   if (patch.description !== undefined) doc.description = patch.description;
   if (patch.isFeatured !== undefined) doc.isFeatured = patch.isFeatured;
@@ -640,6 +650,8 @@ export async function duplicateProductById(id: string, actorId?: string) {
     name: `${original.name} (Copy)`,
     slug,
     sku,
+    weightPerPackGrams: original.weightPerPackGrams,
+    numberOfPacks: original.numberOfPacks,
     shortDescription: original.shortDescription,
     description: original.description,
     categoryId: original.categoryId,
@@ -891,6 +903,8 @@ interface PublicListDoc {
   _id: mongoose.Types.ObjectId;
   name: string;
   slug: string;
+  weightPerPackGrams?: number | null;
+  numberOfPacks?: number | null;
   shortDescription: string;
   categoryId: mongoose.Types.ObjectId;
   brandId: mongoose.Types.ObjectId;
@@ -972,7 +986,9 @@ async function hydratePublicListItems(docs: PublicListDoc[]) {
       productId: d._id.toString(),
       name: d.name,
       slug: d.slug,
-      shortDescription: d.shortDescription,
+      weightPerPackGrams: d.weightPerPackGrams,
+    numberOfPacks: d.numberOfPacks,
+    shortDescription: d.shortDescription,
       category: category ? { categoryId: category._id.toString(), name: category.name, slug: category.slug } : null,
       brand: brand ? { brandId: brand._id.toString(), name: brand.name, slug: brand.slug } : null,
       image: toPublicImage(imageMap.get(d._id.toString()), d.name),
@@ -1083,7 +1099,7 @@ export async function getPublicProductList(params: PublicProductListParams) {
 
   const [docs, total] = await Promise.all([
     Product.find(filter)
-      .select("name slug shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
+      .select("name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
       .sort(sortSpec)
       .skip((page - 1) * pageSize)
       .limit(pageSize)
@@ -1209,6 +1225,8 @@ export async function getPublicProductBySlug(slug: string) {
     name: doc.name,
     slug: doc.slug,
     sku: doc.sku,
+    weightPerPackGrams: doc.weightPerPackGrams,
+    numberOfPacks: doc.numberOfPacks,
     shortDescription: doc.shortDescription,
     description: doc.description,
     category: category ? { categoryId: category._id.toString(), name: category.name, slug: category.slug } : null,
@@ -1245,7 +1263,7 @@ export async function getRelatedProducts(slug: string, limit = 8) {
   if (!source) return [];
 
   const base = { status: { $in: PUBLIC_STATUSES }, _id: { $ne: source._id } };
-  const projection = "name slug shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt";
+  const projection = "name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt";
 
   const sameCategory = await Product.find({ ...base, categoryId: source.categoryId })
     .select(projection)
@@ -1286,7 +1304,7 @@ export async function getProductSummariesByIds(productIds: string[]) {
   if (!validIds.length) return [];
 
   const docs = await Product.find({ _id: { $in: validIds }, status: { $in: PUBLIC_STATUSES } })
-    .select("name slug shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
+    .select("name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
     .lean();
 
   return hydratePublicListItems(docs as unknown as PublicListDoc[]);

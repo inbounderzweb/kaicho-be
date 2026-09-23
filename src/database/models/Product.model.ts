@@ -53,6 +53,8 @@ export interface ProductDocument extends Document {
   name: string;
   slug: string;
   sku: string;
+  weightPerPackGrams?: number | null;
+  numberOfPacks?: number | null;
   shortDescription: string;
   description: string;
 
@@ -141,6 +143,8 @@ const ProductSchema = new Schema<ProductDocument>(
     name: { type: String, required: true, trim: true, minlength: 2, maxlength: 200 },
     slug: { type: String, required: true, trim: true, unique: true, maxlength: 220 },
     sku: { type: String, required: true, trim: true, unique: true, uppercase: true, maxlength: 64 },
+    weightPerPackGrams: { type: Number, min: 0.01, default: null },
+    numberOfPacks: { type: Number, min: 1, validate: { validator: (v: number | null) => v == null || Number.isInteger(v), message: "Pack count must be a whole number" }, default: null },
     shortDescription: { type: String, required: true, trim: true, maxlength: 300 },
     description: { type: String, required: true, trim: true, maxlength: 20000 },
 
