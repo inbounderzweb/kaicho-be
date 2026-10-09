@@ -1,5 +1,6 @@
 export * from "./User.model";
 export * from "./OtpVerification.model";
+export * from "./EmailVerificationToken.model";
 export * from "./Media.model";
 export * from "./MediaUsage.model";
 export * from "./Category.model";

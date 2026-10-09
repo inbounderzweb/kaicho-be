@@ -4,7 +4,7 @@ import { env } from "../../config/env";
 import { AppError } from "../../common/errors";
 import { generateOtp, hashOtp, compareOtp } from "../../common/utils/otp";
 import { getSmsProvider } from "../../common/sms";
-import { OtpVerification, User, UserDocument } from "../../database/models";
+import { EmailVerificationToken, OtpVerification, User, UserDocument } from "../../database/models";
 
 const PURPOSE = "login";
 
@@ -221,6 +221,20 @@ async function verifyGoogleCredential(credential: string): Promise<GoogleProfile
   };
 }
 
+// Called when Google (which has verified the mailbox) is linked to an
+// existing local account. If that account was an UNVERIFIED password
+// registration, the password was set by whoever typed the email in - not
+// proven to be the owner - so it is discarded, along with any pending link
+// and any session. Otherwise a squatter could register victim@x.com with a
+// known password, wait for the victim to "Continue with Google", and keep
+// access to the now-verified account.
+export async function discardUnverifiedCredentials(user: UserDocument): Promise<void> {
+  if (user.emailVerified) return;
+  user.passwordHash = undefined;
+  user.tokenVersion += 1;
+  await EmailVerificationToken.deleteMany({ userId: user._id });
+}
+
 export async function loginWithGoogle(credential: string): Promise<VerifyOtpResult> {
   const profile = await verifyGoogleCredential(credential);
 
@@ -237,6 +251,12 @@ export async function loginWithGoogle(credential: string): Promise<VerifyOtpResu
   }
 
   if (user) {
+    if (!user.isActive) {
+      throw new AppError("This account has been disabled. Please contact support.", 403);
+    }
+    // Must run before emailVerified is flipped below - it only discards
+    // credentials from a registration that was never proven to be the owner.
+    await discardUnverifiedCredentials(user);
     if (!user.googleId) user.googleId = profile.sub;
     if (!user.email) user.email = profile.email;
     user.emailVerified = true;

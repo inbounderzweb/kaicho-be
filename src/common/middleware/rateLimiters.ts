@@ -128,3 +128,88 @@ export const paymentVerifyLimiter = rateLimit({
     message: "Too many payment verification attempts. Please try again later.",
   },
 });
+
+// --- Email/password auth -----------------------------------------------------
+// The per-email limiters are the real brute-force/abuse controls (an IP is
+// cheap to rotate; the target address is not). The per-IP ones are a coarse
+// backstop. All are in-memory per process, like the limiters above - with
+// WEB_CONCURRENCY > 1 the effective ceiling is multiplied by the worker count.
+
+function emailKey(req: { body?: { email?: unknown }; ip?: string }): string {
+  const email = typeof req.body?.email === "string" ? req.body.email : undefined;
+  return email ? `email:${email}` : ipKeyGenerator(req.ip ?? "unknown");
+}
+
+export const registerIpLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitRegisterMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many sign-up attempts from this device. Please try again later.",
+  },
+});
+
+export const loginIpLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitLoginIpMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many login attempts from this device. Please try again later.",
+  },
+});
+
+// Counts FAILED attempts only, so a user who logs in successfully is never
+// throttled by their own earlier typos.
+export const loginEmailLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitLoginMax,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: emailKey,
+  message: {
+    success: false,
+    message: "Too many failed login attempts. Please try again later.",
+  },
+});
+
+export const resendVerificationIpLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitResendVerificationIpMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many requests from this device. Please try again later.",
+  },
+});
+
+// Keyed on the submitted address whether or not an account exists, so the
+// 429 itself can't be used to probe for accounts.
+export const resendVerificationEmailLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitResendVerificationMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: emailKey,
+  message: {
+    success: false,
+    message: "Too many requests. Please try again later.",
+  },
+});
+
+// Tokens are 256-bit, so guessing is hopeless; this just bounds junk traffic.
+export const verifyEmailLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitVerifyEmailMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many verification attempts. Please try again later.",
+  },
+});

@@ -33,6 +33,9 @@ export interface UserDocument extends Document {
   lastName?: string;
   email?: string;
   emailVerified: boolean;
+  // bcrypt hash for email/password accounts. select:false - never loaded
+  // unless a query opts in with .select("+passwordHash").
+  passwordHash?: string;
   avatar?: string;
   addresses: Address[];
   wishlist: string[];
@@ -82,8 +85,11 @@ const UserSchema = new Schema<UserDocument>(
     googleId: { type: String, unique: true, sparse: true, index: true },
     firstName: { type: String },
     lastName: { type: String },
-    email: { type: String },
+    // Stored trimmed + lowercased so lookups are exact-match and the unique
+    // index below is case-insensitive in effect.
+    email: { type: String, trim: true, lowercase: true },
     emailVerified: { type: Boolean, default: false },
+    passwordHash: { type: String, select: false },
     avatar: { type: String },
     addresses: { type: [AddressSchema], default: [] },
     wishlist: { type: [String], default: [] },
@@ -93,6 +99,12 @@ const UserSchema = new Schema<UserDocument>(
     lastLoginAt: { type: Date },
   },
   { timestamps: true }
+);
+
+// Unique only among users that HAVE an email (OTP-only users have none).
+UserSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: "string" } } }
 );
 
 export const User = model<UserDocument>("User", UserSchema);

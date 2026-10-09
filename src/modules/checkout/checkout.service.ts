@@ -553,14 +553,6 @@ export async function createCheckout(
     };
   }
 
-  // A reachable mobile number is mandatory to place an order — deliveries and
-  // order updates depend on it. Google-sign-in accounts start without one;
-  // the checkout page makes them add it first, and this is the enforcement.
-  const buyer = await User.findById(userId).select("phone").lean();
-  if (!buyer?.phone) {
-    throw new AppError("Add a mobile number to your account before checking out.", 400);
-  }
-
   const address = await getAddressOrThrow(userId, input.addressId);
 
   const products = await loadProducts(input.items);

@@ -65,6 +65,30 @@ export const env = {
   // deployed environment regardless of what this is set to.
   devOtpBypassCode: required("DEV_OTP_BYPASS_CODE", "0000"),
 
+  // --- Email/password auth + email verification ---------------------------
+  // Public origin of the storefront, used ONLY to build the link in the
+  // verification email. Taken from config, never from the request's
+  // Host/Origin headers (a forged Host would otherwise poison the link).
+  // Falls back to the first FRONTEND_ORIGIN entry.
+  appUrl: (process.env.APP_URL || "").trim().replace(/\/+$/, "") || undefined,
+  emailVerificationExpiryMinutes: requiredInt("EMAIL_VERIFICATION_EXPIRY_MINUTES", 30),
+  // Minimum gap between two verification emails for the same account.
+  emailVerificationResendCooldownSeconds: requiredInt("EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS", 60),
+  bcryptRounds: requiredInt("BCRYPT_ROUNDS", 12),
+
+  // Number of reverse-proxy hops in front of this process (Express "trust
+  // proxy"). Needed so per-IP rate limits see the real client IP instead of
+  // the proxy's. Unset = trust none (req.ip is the socket peer).
+  trustProxyHops: process.env.TRUST_PROXY ? parseInt(process.env.TRUST_PROXY, 10) : undefined,
+
+  // Per-EMAIL cap on failed logins, and a looser per-IP backstop.
+  rateLimitLoginMax: requiredInt("RATE_LIMIT_LOGIN_MAX", 10),
+  rateLimitLoginIpMax: requiredInt("RATE_LIMIT_LOGIN_IP_MAX", 30),
+  rateLimitRegisterMax: requiredInt("RATE_LIMIT_REGISTER_MAX", 10),
+  rateLimitVerifyEmailMax: requiredInt("RATE_LIMIT_VERIFY_EMAIL_MAX", 30),
+  rateLimitResendVerificationMax: requiredInt("RATE_LIMIT_RESEND_VERIFICATION_MAX", 5),
+  rateLimitResendVerificationIpMax: requiredInt("RATE_LIMIT_RESEND_VERIFICATION_IP_MAX", 10),
+
   rateLimitWindowMinutes: requiredInt("RATE_LIMIT_WINDOW_MINUTES", 10),
   rateLimitOtpMax: requiredInt("RATE_LIMIT_OTP_MAX", 10),
   // Public inquiry-form submissions, per IP, per RATE_LIMIT_WINDOW_MINUTES.
