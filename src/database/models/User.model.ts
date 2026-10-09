@@ -43,6 +43,11 @@ export interface UserDocument extends Document {
   isActive: boolean;
   tokenVersion: number;
   lastLoginAt?: Date;
+  // Opt-in consent to behavioural tracking (modules/interaction). Absent =
+  // never asked = no tracking.
+  trackingConsent?: { granted: boolean; version: number; updatedAt: Date };
+  // When the customer last opened their notification bell; anything newer is "unread".
+  notificationsSeenAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -97,6 +102,13 @@ const UserSchema = new Schema<UserDocument>(
     isActive: { type: Boolean, default: true },
     tokenVersion: { type: Number, default: 0 },
     lastLoginAt: { type: Date },
+    notificationsSeenAt: { type: Date },
+    trackingConsent: {
+      type: new Schema(
+        { granted: Boolean, version: Number, updatedAt: Date },
+        { _id: false }
+      ),
+    },
   },
   { timestamps: true }
 );

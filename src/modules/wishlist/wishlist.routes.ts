@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../../common/middleware";
+import { interactionContext } from "../interaction/interaction.context";
 import {
   getWishlistHandler,
   addToWishlistHandler,
@@ -12,7 +13,7 @@ import {
 const router = Router();
 
 router.get("/", requireAuth, getWishlistHandler);
-router.post("/:productId", requireAuth, addToWishlistHandler);
-router.delete("/:productId", requireAuth, removeFromWishlistHandler);
+router.post("/:productId", requireAuth, interactionContext, addToWishlistHandler);
+router.delete("/:productId", requireAuth, interactionContext, removeFromWishlistHandler);
 
 export default router;

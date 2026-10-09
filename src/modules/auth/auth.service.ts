@@ -21,6 +21,11 @@ export interface AuthUserDto {
   role: UserDocument["role"];
   createdAt: Date;
   lastLoginAt?: Date;
+  // null = never asked. Rides on /auth/me so the storefront needs no separate
+  // consent request.
+  // Omitted entirely when interaction tracking is switched off, which is how
+  // the storefront knows not to ask.
+  trackingConsent?: { granted: boolean; updatedAt: Date } | null;
 }
 
 export function toUserDto(user: UserDocument): AuthUserDto {
@@ -37,6 +42,11 @@ export function toUserDto(user: UserDocument): AuthUserDto {
     role: user.role,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
+    ...(env.interactionTrackingEnabled && {
+      trackingConsent: user.trackingConsent
+        ? { granted: user.trackingConsent.granted, updatedAt: user.trackingConsent.updatedAt }
+        : null,
+    }),
   };
 }
 

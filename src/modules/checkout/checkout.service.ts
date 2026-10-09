@@ -37,6 +37,7 @@ import { createRazorpayOrder } from "../../common/payments/razorpay";
 import { getShippingPolicy, getDefaultPackRecommendationStrategy } from "../settings/settings.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
 import { trackServerPurchase } from "../../common/analytics/ga4";
+import { interactionTrackingService } from "../interaction/interaction.tracking.service";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
 
 // The shipping policy is now admin-configurable — the live values come from
@@ -791,7 +792,13 @@ export async function createCheckout(
       trackServerPurchase(toGa4PurchaseParams(order)).catch((err) => {
         console.error("[analytics] GA4 purchase tracking failed", err);
       });
+      // Interaction history: never throws; a miss is repaired by the
+      // purchase-recovery sweep (the order is the durable record).
+      void interactionTrackingService.trackPurchaseForOrder(order);
     }
+    // Order placed: the authoritative "checkout started" signal. Buffered,
+    // fire-and-forget, never throws.
+    void interactionTrackingService.trackCheckoutStarted(order);
 
     return { order: toOrderDto(order), razorpayOrder, replayed: false };
   } catch (err) {

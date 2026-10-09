@@ -13,6 +13,8 @@ declare global {
   namespace Express {
     interface Request {
       userId?: string;
+      // Already loaded by requireAuth; lets the interaction endpoint skip a second user query.
+      trackingConsent?: { granted: boolean; version: number; updatedAt: Date };
     }
   }
 }
@@ -43,7 +45,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
   // some point — it says nothing about whether that session has since been
   // logged out, the account disabled, or the token superseded. This lookup
   // is what makes revocation real instead of cosmetic.
-  const user = await User.findById(payload.sub).select("tokenVersion isActive").lean();
+  const user = await User.findById(payload.sub).select("tokenVersion isActive trackingConsent").lean();
 
   if (!user || !user.isActive || user.tokenVersion !== payload.tv) {
     next(new AppError(SESSION_INVALID_MESSAGE, 401));
@@ -51,5 +53,6 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
   }
 
   req.userId = payload.sub;
+  req.trackingConsent = user.trackingConsent;
   next();
 }

@@ -97,6 +97,20 @@ export const checkoutLimiter = rateLimit({
   },
 });
 
+// Interaction-event ingestion. Per logged-in user (the route is behind
+// requireAuth), so a shared NAT'd IP doesn't throttle other customers.
+export const interactionLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitInteractionMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.userId ?? ipKeyGenerator(req.ip ?? "unknown"),
+  message: {
+    success: false,
+    message: "Too many requests. Please try again later.",
+  },
+});
+
 // Coupon-code validation. Same per-user keying as checkout (it's always
 // behind requireAuth). Its real job is to stop a script enumerating valid
 // codes through /api/coupons/validate — the endpoint already returns a

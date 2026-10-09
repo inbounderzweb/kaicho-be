@@ -173,6 +173,20 @@ export const env = {
   // script would hammer to enumerate valid codes.
   rateLimitCouponValidateMax: requiredInt("RATE_LIMIT_COUPON_VALIDATE_MAX", 20),
 
+  // MASTER SWITCH for the whole interaction-history feature. Off (the
+  // default): nothing is recorded, buffered, swept or asked for, and the
+  // storefront stops showing the consent prompt. Existing data is untouched.
+  interactionTrackingEnabled: (process.env.INTERACTION_TRACKING_ENABLED ?? "false").trim().toLowerCase() === "true",
+  // Interaction tracking (modules/interaction). Events from one user, per
+  // RATE_LIMIT_WINDOW_MINUTES - batches of up to 20 count as one request.
+  rateLimitInteractionMax: requiredInt("RATE_LIMIT_INTERACTION_MAX", 120),
+  // Raw interaction events are deleted by a TTL index after this many days.
+  interactionRetentionDays: requiredInt("INTERACTION_RETENTION_DAYS", 180),
+  // Server-side tracking buffer: max events held in memory per process before
+  // new ones are dropped (backpressure), and the max age before a flush.
+  interactionBufferMax: requiredInt("INTERACTION_BUFFER_MAX", 5000),
+  interactionFlushIntervalMs: requiredInt("INTERACTION_FLUSH_INTERVAL_MS", 2000),
+
   // Courier aggregator (Shiprocket etc.). Empty by default — shipments are
   // entered manually today (Order.shipment.provider === "manual"). When a
   // client is added it lives behind shipment.service.ts's saveShipment(), the
