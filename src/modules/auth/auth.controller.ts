@@ -87,6 +87,24 @@ export const resendVerification = asyncHandler(async (req: Request, res: Respons
   });
 });
 
+export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
+  await emailAuth.requestPasswordReset(req.body.email);
+  res.status(200).json({
+    success: true,
+    message: "If an account exists for that email, a password reset link has been sent.",
+    data: { sent: true, resendAfter: env.passwordResetCooldownSeconds },
+  });
+});
+
+export const resetPassword = asyncHandler(async (req: Request, res: Response) => {
+  await emailAuth.resetPassword(req.body.token, req.body.password);
+  res.status(200).json({
+    success: true,
+    message: "Password updated. Please log in with your new password.",
+    data: { reset: true },
+  });
+});
+
 export const updateMe = asyncHandler(async (req: Request, res: Response) => {
   // req.body is already narrowed to { name?, phone?, countryCode? } by
   // validateBody(updateMeSchema).

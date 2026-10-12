@@ -95,6 +95,15 @@ export const resendVerificationSchema = z.object({
   email: emailField,
 });
 
+export const forgotPasswordSchema = z.object({
+  email: emailField,
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().trim().min(1, "Reset link is invalid or expired.").max(256),
+  password: newPasswordField,
+});
+
 export type SendOtpInput = z.infer<typeof sendOtpSchema>;
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
 export type UpdateMeInput = z.infer<typeof updateMeSchema>;

@@ -74,6 +74,9 @@ export const env = {
   emailVerificationExpiryMinutes: requiredInt("EMAIL_VERIFICATION_EXPIRY_MINUTES", 30),
   // Minimum gap between two verification emails for the same account.
   emailVerificationResendCooldownSeconds: requiredInt("EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS", 60),
+  passwordResetExpiryMinutes: requiredInt("PASSWORD_RESET_EXPIRY_MINUTES", 30),
+  // Minimum gap between two reset emails for the same account.
+  passwordResetCooldownSeconds: requiredInt("PASSWORD_RESET_COOLDOWN_SECONDS", 60),
   bcryptRounds: requiredInt("BCRYPT_ROUNDS", 12),
 
   // Number of reverse-proxy hops in front of this process (Express "trust
@@ -87,6 +90,9 @@ export const env = {
   rateLimitRegisterMax: requiredInt("RATE_LIMIT_REGISTER_MAX", 10),
   rateLimitVerifyEmailMax: requiredInt("RATE_LIMIT_VERIFY_EMAIL_MAX", 30),
   rateLimitResendVerificationMax: requiredInt("RATE_LIMIT_RESEND_VERIFICATION_MAX", 5),
+  rateLimitForgotPasswordMax: requiredInt("RATE_LIMIT_FORGOT_PASSWORD_MAX", 5),
+  rateLimitForgotPasswordIpMax: requiredInt("RATE_LIMIT_FORGOT_PASSWORD_IP_MAX", 10),
+  rateLimitResetPasswordMax: requiredInt("RATE_LIMIT_RESET_PASSWORD_MAX", 20),
   rateLimitResendVerificationIpMax: requiredInt("RATE_LIMIT_RESEND_VERIFICATION_IP_MAX", 10),
 
   rateLimitWindowMinutes: requiredInt("RATE_LIMIT_WINDOW_MINUTES", 10),

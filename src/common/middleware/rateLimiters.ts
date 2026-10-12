@@ -227,3 +227,42 @@ export const verifyEmailLimiter = rateLimit({
     message: "Too many verification attempts. Please try again later.",
   },
 });
+
+// --- Password reset ----------------------------------------------------------
+// Same shape as the resend-verification pair: the per-email bucket is keyed on
+// the submitted address whether or not an account exists, so a 429 can't be
+// used to probe for accounts.
+export const forgotPasswordIpLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitForgotPasswordIpMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many requests from this device. Please try again later.",
+  },
+});
+
+export const forgotPasswordEmailLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitForgotPasswordMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: emailKey,
+  message: {
+    success: false,
+    message: "Too many requests. Please try again later.",
+  },
+});
+
+// Tokens are 256-bit, so guessing is hopeless; this just bounds junk traffic.
+export const resetPasswordLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitResetPasswordMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many attempts. Please try again later.",
+  },
+});

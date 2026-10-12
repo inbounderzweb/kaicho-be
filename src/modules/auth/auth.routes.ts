@@ -10,6 +10,8 @@ import {
   login,
   verifyEmail,
   resendVerification,
+  forgotPassword,
+  resetPassword,
 } from "./auth.controller";
 import {
   sendOtpSchema,
@@ -20,6 +22,8 @@ import {
   loginSchema,
   verifyEmailSchema,
   resendVerificationSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
 } from "./auth.validation";
 import {
   validateBody,
@@ -32,6 +36,9 @@ import {
   resendVerificationIpLimiter,
   resendVerificationEmailLimiter,
   verifyEmailLimiter,
+  forgotPasswordIpLimiter,
+  forgotPasswordEmailLimiter,
+  resetPasswordLimiter,
 } from "../../common/middleware";
 
 const router = Router();
@@ -74,6 +81,16 @@ router.post(
   resendVerificationEmailLimiter,
   resendVerification
 );
+
+router.post(
+  "/forgot-password",
+  forgotPasswordIpLimiter,
+  validateBody(forgotPasswordSchema),
+  forgotPasswordEmailLimiter,
+  forgotPassword
+);
+
+router.post("/reset-password", resetPasswordLimiter, validateBody(resetPasswordSchema), resetPassword);
 
 router.get("/me", requireAuth, getMe);
 

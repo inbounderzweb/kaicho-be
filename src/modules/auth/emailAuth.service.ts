@@ -3,8 +3,8 @@ import bcrypt from "bcrypt";
 import { env } from "../../config/env";
 import { AppError } from "../../common/errors";
 import { sendEmail, maskEmail } from "../../common/email/email.service";
-import { verificationEmail } from "../../common/email/templates";
-import { EmailVerificationToken, User, UserDocument } from "../../database/models";
+import { verificationEmail, passwordResetEmail } from "../../common/email/templates";
+import { EmailVerificationToken, PasswordResetToken, User, UserDocument } from "../../database/models";
 import { AuthUserDto, signSessionToken, toUserDto } from "./auth.service";
 
 export interface SessionResult {
@@ -220,4 +220,95 @@ export async function loginWithPassword(email: string, password: string): Promis
   await user.save();
 
   return { token: signSessionToken(user), user: toUserDto(user), requiresName: !user.firstName };
+}
+
+// --- forgot / reset password -----------------------------------------------
+
+const INVALID_RESET_MESSAGE = "Reset link is invalid or expired.";
+
+function resetLink(rawToken: string): string {
+  const base = env.appUrl ?? env.frontendOrigins[0];
+  return `${base}/reset-password?token=${rawToken}`;
+}
+
+async function issueResetToken(userId: UserDocument["_id"]): Promise<string> {
+  const rawToken = crypto.randomBytes(32).toString("base64url");
+  await PasswordResetToken.deleteMany({ userId });
+  await PasswordResetToken.create({
+    userId,
+    tokenHash: hashToken(rawToken),
+    expiresAt: new Date(Date.now() + env.passwordResetExpiryMinutes * 60 * 1000),
+  });
+  return rawToken;
+}
+
+async function withinResetCooldown(userId: UserDocument["_id"]): Promise<boolean> {
+  const last = await PasswordResetToken.findOne({ userId })
+    .sort({ createdAt: -1 })
+    .select("createdAt")
+    .lean();
+  if (!last) return false;
+  return Date.now() - last.createdAt.getTime() < env.passwordResetCooldownSeconds * 1000;
+}
+
+// Silent no-op unless the address belongs to an active, VERIFIED account (an
+// unverified one has not proven the mailbox is theirs - they use "resend
+// verification"). Never throws and the caller returns the same generic
+// response either way, so this can't be used to discover who has an account.
+// A Google-only account is eligible too: the link lets them add a password.
+export async function requestPasswordReset(email: string): Promise<void> {
+  try {
+    const user = await User.findOne({ email }).exec();
+    if (!user || !user.emailVerified || !user.isActive) return;
+    if (await withinResetCooldown(user._id)) return;
+
+    const rawToken = await issueResetToken(user._id);
+    const { subject, html, text } = passwordResetEmail({
+      name: displayName(user),
+      link: resetLink(rawToken),
+      expiryMinutes: env.passwordResetExpiryMinutes,
+    });
+    await sendEmail({ to: email, subject, html, text });
+  } catch (err) {
+    console.error(
+      `[auth] failed to send password reset email to ${maskEmail(email)}:`,
+      err instanceof Error ? err.message : "unknown error"
+    );
+  }
+}
+
+// Does NOT sign the user in: the link proves mailbox control, but a session
+// is minted only by an explicit login with the new password.
+export async function resetPassword(rawToken: string, newPassword: string): Promise<void> {
+  if (!TOKEN_SHAPE.test(rawToken)) {
+    throw new AppError(INVALID_RESET_MESSAGE, 400);
+  }
+
+  // Atomic find-and-delete => the link is single-use even under concurrency.
+  const record = await PasswordResetToken.findOneAndDelete({
+    tokenHash: hashToken(rawToken),
+    expiresAt: { $gt: new Date() },
+  }).exec();
+  if (!record) {
+    throw new AppError(INVALID_RESET_MESSAGE, 400);
+  }
+
+  const user = await User.findById(record.userId).exec();
+  if (!user || !user.isActive) {
+    throw new AppError(INVALID_RESET_MESSAGE, 400);
+  }
+
+  user.passwordHash = await bcrypt.hash(newPassword, env.bcryptRounds);
+  // Receiving the email proves the mailbox, so a pending unverified
+  // registration is settled too.
+  user.emailVerified = true;
+  // Invalidates every existing session - the usual reason to reset is that
+  // someone else may have had access.
+  user.tokenVersion += 1;
+  await user.save();
+
+  await Promise.all([
+    PasswordResetToken.deleteMany({ userId: user._id }),
+    EmailVerificationToken.deleteMany({ userId: user._id }),
+  ]);
 }

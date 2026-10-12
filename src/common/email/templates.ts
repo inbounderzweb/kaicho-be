@@ -56,6 +56,53 @@ export function verificationEmail(params: {
   return { subject, html, text };
 }
 
+export function passwordResetEmail(params: {
+  name: string;
+  link: string;
+  expiryMinutes: number;
+}) {
+  const { name, link, expiryMinutes } = params;
+  const subject = "Reset your Kaicho password";
+
+  const text = [
+    `Hello ${name},`,
+    "",
+    "We received a request to reset the password on your Kaicho account.",
+    "",
+    "Open the link below to choose a new password:",
+    link,
+    "",
+    `This link expires in ${expiryMinutes} minutes and can be used once.`,
+    "",
+    "If you did not request this, you can safely ignore this email - your password will not change.",
+  ].join("\n");
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#f6f5f1;font-family:Arial,Helvetica,sans-serif;color:#1f2a24;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+      <tr><td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:480px;background:#ffffff;border-radius:16px;padding:32px;">
+          <tr><td>
+            <h1 style="margin:0 0 16px;font-size:20px;">Reset your Kaicho password</h1>
+            <p style="margin:0 0 12px;font-size:15px;line-height:1.5;">Hello ${escapeHtml(name)},</p>
+            <p style="margin:0 0 20px;font-size:15px;line-height:1.5;">We received a request to reset the password on your Kaicho account. Click the button below to choose a new one:</p>
+            <p style="margin:0 0 24px;">
+              <a href="${escapeHtml(link)}" style="display:inline-block;background:#00a961;color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;padding:12px 28px;border-radius:999px;">Reset Password</a>
+            </p>
+            <p style="margin:0 0 12px;font-size:13px;line-height:1.5;color:#5b6660;">This link expires in ${expiryMinutes} minutes and can be used once.</p>
+            <p style="margin:0 0 12px;font-size:13px;line-height:1.5;color:#5b6660;">If the button doesn't work, copy and paste this link into your browser:<br><span style="word-break:break-all;">${escapeHtml(link)}</span></p>
+            <p style="margin:0;font-size:13px;line-height:1.5;color:#5b6660;">If you did not request this, you can safely ignore this email - your password will not change.</p>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>`;
+
+  return { subject, html, text };
+}
+
 export function inquiryReceivedEmail(params: {
   name: string;
   inquiryNumber: string;
