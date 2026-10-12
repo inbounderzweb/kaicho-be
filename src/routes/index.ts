@@ -14,6 +14,8 @@ import productPublicRoutes from "../modules/product/productPublic.routes";
 import categoryPublicRoutes from "../modules/category/categoryPublic.routes";
 import collectionPublicRoutes from "../modules/collection/collectionPublic.routes";
 import brandPublicRoutes from "../modules/brand/brandPublic.routes";
+import interactionRoutes from "../modules/interaction/interaction.routes";
+import customerNotificationRoutes from "../modules/customerNotification/customerNotification.routes";
 import wishlistRoutes from "../modules/wishlist/wishlist.routes";
 import addressRoutes from "../modules/address/address.routes";
 import checkoutRoutes from "../modules/checkout/checkout.routes";
@@ -86,6 +88,12 @@ router.use("/admin", adminDashboardRoutes);
 // work for anonymous shoppers too, so it lives alongside the other
 // unauthenticated catalog routes rather than under the authenticated
 // /checkout router below (decision #6, checkout.pack plan).
+// Private, per-user behavioural tracking (consent-gated). Mounted at the
+// root because it owns both /interactions and /me/*; every route inside is
+// behind requireAuth.
+router.use("/", interactionRoutes);
+// Customer-facing order-update notifications (derived from order status history).
+router.use("/notifications", customerNotificationRoutes);
 router.use("/cart", cartPackRoutes);
 router.use("/products", publicCache, productPublicRoutes);
 router.use("/categories", publicCache, categoryPublicRoutes);

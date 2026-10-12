@@ -8,3 +8,9 @@
 // run write real files to the Cloudinary account and fail the assertions in
 // media.test.ts that check the local filesystem.
 process.env.STORAGE_PROVIDER = "local";
+
+// Same idea for email: the tests share .env, whose SMTP_* would send REAL mail
+// (e.g. inquiry confirmations to fake addresses) through the developer's mailbox.
+// Blank SMTP makes sendEmail a logged no-op; tests that assert on email mock
+// the email service instead.
+process.env.SMTP_HOST = "";

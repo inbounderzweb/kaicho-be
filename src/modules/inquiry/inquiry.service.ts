@@ -13,6 +13,8 @@ import {
 } from "../../database/models";
 import { createInquiryWithUniqueNumber } from "./inquiry.number";
 import { toE164IndianMobile } from "../../common/utils/phone";
+import { sendEmail, maskEmail } from "../../common/email/email.service";
+import { inquiryReceivedEmail } from "../../common/email/templates";
 import type {
   SubmitBulkOrderInput,
   SubmitContactInput,
@@ -92,7 +94,37 @@ export async function createInquiryFromForm(
   await writeActivity(doc._id, "CREATED", { userId: null, newValue: "NEW" });
   logInquiryEvent("submitted", { inquiryNumber: doc.inquiryNumber, formType });
 
+  // Fire-and-forget: the form response must not wait on (or fail because of) email.
+  void sendInquiryConfirmation(doc);
+
   return { inquiryNumber: doc.inquiryNumber };
+}
+
+// The submit endpoint is public, so the recipient address is whatever the
+// submitter typed. Cap confirmations per address so the form can't be used
+// to flood someone else's inbox.
+const CONFIRMATIONS_PER_EMAIL_PER_HOUR = 3;
+
+async function sendInquiryConfirmation(doc: InquiryDocument): Promise<void> {
+  try {
+    const recent = await Inquiry.countDocuments({
+      email: doc.email,
+      createdAt: { $gte: new Date(Date.now() - 60 * 60 * 1000) },
+    });
+    if (recent > CONFIRMATIONS_PER_EMAIL_PER_HOUR) return;
+
+    const { subject, html, text } = inquiryReceivedEmail({
+      name: doc.name,
+      inquiryNumber: doc.inquiryNumber,
+      kind: doc.formType === "bulk_order" ? "bulk_order" : "contact",
+    });
+    await sendEmail({ to: doc.email, subject, html, text });
+  } catch (err) {
+    console.error(
+      `[inquiry] confirmation email failed for ${doc.inquiryNumber} (${maskEmail(doc.email)}):`,
+      err instanceof Error ? err.message : "unknown error"
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

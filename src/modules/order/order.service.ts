@@ -16,6 +16,7 @@ import {
   Product,
 } from "../../database/models";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
+import { notifyOrderStatusChange } from "./orderStatusNotification";
 import type { Ga4PurchaseParams } from "../../common/analytics/ga4";
 
 function isValidObjectId(id: string): boolean {
@@ -458,6 +459,7 @@ export async function updateOrderStatusAdmin(
     doc.cancelReason = note ?? "Cancelled by admin";
   }
 
+  const previousStatus = doc.status;
   doc.status = nextStatus;
   doc.statusHistory.push({
     status: nextStatus,
@@ -466,6 +468,7 @@ export async function updateOrderStatusAdmin(
     actor: actorId ? new mongoose.Types.ObjectId(actorId) : undefined,
   });
   await doc.save();
+  notifyOrderStatusChange(doc, previousStatus);
 
   return toOrderDto(doc);
 }

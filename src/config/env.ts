@@ -65,6 +65,36 @@ export const env = {
   // deployed environment regardless of what this is set to.
   devOtpBypassCode: required("DEV_OTP_BYPASS_CODE", "0000"),
 
+  // --- Email/password auth + email verification ---------------------------
+  // Public origin of the storefront, used ONLY to build the link in the
+  // verification email. Taken from config, never from the request's
+  // Host/Origin headers (a forged Host would otherwise poison the link).
+  // Falls back to the first FRONTEND_ORIGIN entry.
+  appUrl: (process.env.APP_URL || "").trim().replace(/\/+$/, "") || undefined,
+  emailVerificationExpiryMinutes: requiredInt("EMAIL_VERIFICATION_EXPIRY_MINUTES", 30),
+  // Minimum gap between two verification emails for the same account.
+  emailVerificationResendCooldownSeconds: requiredInt("EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS", 60),
+  passwordResetExpiryMinutes: requiredInt("PASSWORD_RESET_EXPIRY_MINUTES", 30),
+  // Minimum gap between two reset emails for the same account.
+  passwordResetCooldownSeconds: requiredInt("PASSWORD_RESET_COOLDOWN_SECONDS", 60),
+  bcryptRounds: requiredInt("BCRYPT_ROUNDS", 12),
+
+  // Number of reverse-proxy hops in front of this process (Express "trust
+  // proxy"). Needed so per-IP rate limits see the real client IP instead of
+  // the proxy's. Unset = trust none (req.ip is the socket peer).
+  trustProxyHops: process.env.TRUST_PROXY ? parseInt(process.env.TRUST_PROXY, 10) : undefined,
+
+  // Per-EMAIL cap on failed logins, and a looser per-IP backstop.
+  rateLimitLoginMax: requiredInt("RATE_LIMIT_LOGIN_MAX", 10),
+  rateLimitLoginIpMax: requiredInt("RATE_LIMIT_LOGIN_IP_MAX", 30),
+  rateLimitRegisterMax: requiredInt("RATE_LIMIT_REGISTER_MAX", 10),
+  rateLimitVerifyEmailMax: requiredInt("RATE_LIMIT_VERIFY_EMAIL_MAX", 30),
+  rateLimitResendVerificationMax: requiredInt("RATE_LIMIT_RESEND_VERIFICATION_MAX", 5),
+  rateLimitForgotPasswordMax: requiredInt("RATE_LIMIT_FORGOT_PASSWORD_MAX", 5),
+  rateLimitForgotPasswordIpMax: requiredInt("RATE_LIMIT_FORGOT_PASSWORD_IP_MAX", 10),
+  rateLimitResetPasswordMax: requiredInt("RATE_LIMIT_RESET_PASSWORD_MAX", 20),
+  rateLimitResendVerificationIpMax: requiredInt("RATE_LIMIT_RESEND_VERIFICATION_IP_MAX", 10),
+
   rateLimitWindowMinutes: requiredInt("RATE_LIMIT_WINDOW_MINUTES", 10),
   rateLimitOtpMax: requiredInt("RATE_LIMIT_OTP_MAX", 10),
   // Public inquiry-form submissions, per IP, per RATE_LIMIT_WINDOW_MINUTES.
@@ -148,6 +178,20 @@ export const env = {
   // RATE_LIMIT_WINDOW_MINUTES. Tighter than checkout: this is the endpoint a
   // script would hammer to enumerate valid codes.
   rateLimitCouponValidateMax: requiredInt("RATE_LIMIT_COUPON_VALIDATE_MAX", 20),
+
+  // MASTER SWITCH for the whole interaction-history feature. Off (the
+  // default): nothing is recorded, buffered, swept or asked for, and the
+  // storefront stops showing the consent prompt. Existing data is untouched.
+  interactionTrackingEnabled: (process.env.INTERACTION_TRACKING_ENABLED ?? "false").trim().toLowerCase() === "true",
+  // Interaction tracking (modules/interaction). Events from one user, per
+  // RATE_LIMIT_WINDOW_MINUTES - batches of up to 20 count as one request.
+  rateLimitInteractionMax: requiredInt("RATE_LIMIT_INTERACTION_MAX", 120),
+  // Raw interaction events are deleted by a TTL index after this many days.
+  interactionRetentionDays: requiredInt("INTERACTION_RETENTION_DAYS", 180),
+  // Server-side tracking buffer: max events held in memory per process before
+  // new ones are dropped (backpressure), and the max age before a flush.
+  interactionBufferMax: requiredInt("INTERACTION_BUFFER_MAX", 5000),
+  interactionFlushIntervalMs: requiredInt("INTERACTION_FLUSH_INTERVAL_MS", 2000),
 
   // Courier aggregator (Shiprocket etc.). Empty by default — shipments are
   // entered manually today (Order.shipment.provider === "manual"). When a

@@ -5,6 +5,7 @@ import { AppError } from "../../common/errors";
 import { env } from "../../config/env";
 import { User } from "../../database/models";
 import * as authService from "./auth.service";
+import * as emailAuth from "./emailAuth.service";
 
 export const sendOtp = asyncHandler(async (req: Request, res: Response) => {
   const { phone, countryCode } = req.body;
@@ -38,6 +39,69 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
     success: true,
     message: "Logged in successfully",
     data: { user, requiresName },
+  });
+});
+
+export const register = asyncHandler(async (req: Request, res: Response) => {
+  console.log("<><>register 001");
+  await emailAuth.register(req.body);
+  // Same body whether the email was new or already taken (no enumeration).
+  res.status(201).json({
+    success: true,
+    message:
+      "Account created. Please check your email and click the verification link to activate your account.",
+    data: { registered: true },
+  });
+});
+
+export const login = asyncHandler(async (req: Request, res: Response) => {
+  const { token, user, requiresName } = await emailAuth.loginWithPassword(
+    req.body.email,
+    req.body.password
+  );
+  setSessionCookie(res, token);
+  res.status(200).json({
+    success: true,
+    message: "Logged in successfully",
+    data: { user, requiresName },
+  });
+});
+
+export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
+  const { token, user, requiresName } = await emailAuth.verifyEmail(req.body.token);
+  setSessionCookie(res, token);
+  res.status(200).json({
+    success: true,
+    message: "Email verified successfully.",
+    data: { user, requiresName },
+  });
+});
+
+export const resendVerification = asyncHandler(async (req: Request, res: Response) => {
+  console.log("<><>working");
+  await emailAuth.resendVerification(req.body.email);
+  res.status(200).json({
+    success: true,
+    message: "If the account exists and is not verified, a verification email has been sent.",
+    data: { sent: true, resendAfter: env.emailVerificationResendCooldownSeconds },
+  });
+});
+
+export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
+  await emailAuth.requestPasswordReset(req.body.email);
+  res.status(200).json({
+    success: true,
+    message: "If an account exists for that email, a password reset link has been sent.",
+    data: { sent: true, resendAfter: env.passwordResetCooldownSeconds },
+  });
+});
+
+export const resetPassword = asyncHandler(async (req: Request, res: Response) => {
+  await emailAuth.resetPassword(req.body.token, req.body.password);
+  res.status(200).json({
+    success: true,
+    message: "Password updated. Please log in with your new password.",
+    data: { reset: true },
   });
 });
 
