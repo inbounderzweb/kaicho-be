@@ -5,6 +5,7 @@ import { restoreStockForOrder, toGa4PurchaseParams, toOrderDto } from "../order/
 import { releaseCouponForOrder } from "../coupon/coupon.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
 import { trackServerPurchase } from "../../common/analytics/ga4";
+import { interactionTrackingService } from "../interaction/interaction.tracking.service";
 import type { VerifyPaymentInput } from "./payment.validation";
 
 // Two independent paths can mark an order paid: the browser handback
@@ -50,6 +51,9 @@ function notifyIfJustConfirmed(doc: OrderDocument, changed: boolean): void {
   trackServerPurchase(toGa4PurchaseParams(doc)).catch((err) => {
     console.error("[analytics] GA4 purchase tracking failed", err);
   });
+  // Interaction history. Same exactly-once moment as the calls above; never
+  // throws, and the recovery sweep repairs a miss.
+  void interactionTrackingService.trackPurchaseForOrder(doc);
 }
 
 export async function verifyPayment(userId: string, input: VerifyPaymentInput) {

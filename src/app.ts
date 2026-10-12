@@ -14,6 +14,14 @@ const app: Application = express();
 
 // No value to clients, a small header on every response.
 app.disable("x-powered-by");
+// Behind the Next.js /api rewrite and/or a load balancer, req.ip is the
+// proxy's address unless Express is told how many hops to trust - which
+// would put every visitor in ONE per-IP rate-limit bucket. Opt-in via
+// TRUST_PROXY=<hops>; never `true`, which would let a client spoof its IP
+// with its own X-Forwarded-For header.
+if (env.trustProxyHops !== undefined) {
+  app.set("trust proxy", env.trustProxyHops);
+}
 // Log every request (method, path, status, response time) so it's obvious
 // which endpoint is actually being hit — "dev" locally for a readable
 // colored one-liner, "combined" (Apache-style, includes referrer/UA) once

@@ -8,6 +8,7 @@ import {
   ORDER_STATUS_TRANSITIONS,
 } from "../../database/models";
 import { toOrderDto } from "./order.service";
+import { notifyOrderStatusChange } from "./orderStatusNotification";
 import type { SaveShipmentInput } from "./order.validation";
 
 // Shipment handling lives in its own file rather than order.service.ts because
@@ -103,6 +104,7 @@ export async function saveShipment(
   input: SaveShipmentInput
 ) {
   const doc = await loadOrderOr404(orderId);
+  const previousStatus = doc.status;
 
   if (!SHIPPABLE_ORDER_STATUSES.includes(doc.status)) {
     throw new AppError(`This order can't be shipped while it is ${humanizeStatus(doc.status)}`, 409);
@@ -146,6 +148,7 @@ export async function saveShipment(
   if (targetOrderStatus) advanceOrderStatusAlongSequence(doc, targetOrderStatus, actorId);
 
   await doc.save();
+  notifyOrderStatusChange(doc, previousStatus);
   return toOrderDto(doc);
 }
 
@@ -158,6 +161,7 @@ export async function updateShipmentStatus(
   note?: string
 ) {
   const doc = await loadOrderOr404(orderId);
+  const previousStatus = doc.status;
   if (!doc.shipment) {
     throw new AppError("Add shipment details before updating the shipping status", 409);
   }
@@ -172,5 +176,6 @@ export async function updateShipmentStatus(
   if (targetOrderStatus) advanceOrderStatusAlongSequence(doc, targetOrderStatus, actorId);
 
   await doc.save();
+  notifyOrderStatusChange(doc, previousStatus);
   return toOrderDto(doc);
 }

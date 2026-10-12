@@ -1,5 +1,7 @@
 export * from "./User.model";
 export * from "./OtpVerification.model";
+export * from "./EmailVerificationToken.model";
+export * from "./PasswordResetToken.model";
 export * from "./Media.model";
 export * from "./MediaUsage.model";
 export * from "./Category.model";
@@ -20,3 +22,4 @@ export * from "./InquiryActivity.model";
 export * from "./StoreSettings.model";
 export * from "./InstagramPost.model";
 export * from "./YouTubeVideo.model";
+export * from "./UserInteractionEvent.model";

@@ -12,6 +12,9 @@ import { ensureUserAuthIndexes } from "./modules/auth/auth.indexes";
 import { ensureCouponIndexes } from "./modules/coupon/coupon.indexes";
 import { ensureInstagramPostIndexes } from "./modules/instagramPost/instagramPost.indexes";
 import { ensureYouTubeVideoIndexes } from "./modules/youtubeVideo/youtubeVideo.indexes";
+import { ensureInteractionIndexes } from "./modules/interaction/interaction.indexes";
+import { reconcilePurchaseEvents } from "./modules/interaction/interaction.tracking.service";
+import { registerInteractionShutdownFlush } from "./modules/interaction/interaction.buffer";
 import { backfillStructuredAddresses } from "./modules/address/address.migration";
 
 const MEDIA_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
@@ -22,6 +25,9 @@ const ORDER_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 // A scheduled post going live a minute late is directly visible to readers, so
 // this runs on the tightest interval of the three.
 const BLOG_SCHEDULE_INTERVAL_MS = 60 * 1000;
+// Repairs purchase events missed by a crash/failed write; idempotent, so a
+// quiet sweep costs one small indexed query.
+const PURCHASE_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
 
 // The background jobs must run in exactly ONE process, never once per worker —
 // otherwise N workers all race to cancel the same stale orders / publish the
@@ -45,6 +51,12 @@ function startBackgroundJobs() {
       console.error("Scheduled-blog publish job failed:", err);
     });
   }, BLOG_SCHEDULE_INTERVAL_MS);
+
+  setInterval(() => {
+    reconcilePurchaseEvents().catch((err) => {
+      console.error("Purchase-event recovery job failed:", err);
+    });
+  }, PURCHASE_RECONCILE_INTERVAL_MS);
 }
 
 async function startHttpServer() {
@@ -56,6 +68,8 @@ async function startHttpServer() {
   // to worker A won't hear about an order created on worker B — fine at the
   // current single-worker dev/prod setting, but would need a Redis adapter
   // (socket.io-adapter) before scaling workers.
+  // Flush buffered interaction events on SIGTERM/SIGINT before exiting.
+  registerInteractionShutdownFlush();
   const httpServer = http.createServer(app);
   initSocket(httpServer);
   httpServer.listen(env.port, () => {
@@ -82,6 +96,9 @@ async function bootstrap() {
     await ensureYouTubeVideoIndexes().catch((err) => {
       console.error("[youtube-video] index setup failed:", err);
     });
+    await ensureInteractionIndexes().catch((err) => {
+      console.error("[interaction] index setup failed:", err);
+    });
     await backfillStructuredAddresses().catch((err) => {
       console.error("[address] structured-field backfill failed:", err);
     });
@@ -106,6 +123,9 @@ async function bootstrap() {
     });
     await ensureYouTubeVideoIndexes().catch((err) => {
       console.error("[youtube-video] index setup failed:", err);
+    });
+    await ensureInteractionIndexes().catch((err) => {
+      console.error("[interaction] index setup failed:", err);
     });
     await backfillStructuredAddresses().catch((err) => {
       console.error("[address] structured-field backfill failed:", err);

@@ -42,15 +42,25 @@ export async function getWishlist(userId: string) {
   return { items, total: items.length };
 }
 
-export async function addToWishlist(userId: string, productId: string): Promise<void> {
+// Both return whether the wishlist actually changed (a repeat add / remove of
+// an absent item is a no-op), so callers only record real changes.
+export async function addToWishlist(userId: string, productId: string): Promise<boolean> {
   await assertPubliclyVisibleProduct(productId);
-  // $addToSet: idempotent, no duplicate-check round trip needed.
-  await User.updateOne({ _id: userId }, { $addToSet: { wishlist: productId } });
+  // $addToSet: idempotent, no duplicate-check round trip needed. The filter
+  // only matches when the product is NOT already listed, so matchedCount
+  // says whether anything changed (modifiedCount can't: the timestamps
+  // plugin bumps updatedAt even on a no-op).
+  const result = await User.updateOne(
+    { _id: userId, wishlist: { $ne: productId } },
+    { $addToSet: { wishlist: productId } }
+  );
+  return result.matchedCount > 0;
 }
 
-export async function removeFromWishlist(userId: string, productId: string): Promise<void> {
+export async function removeFromWishlist(userId: string, productId: string): Promise<boolean> {
   if (!isValidObjectId(productId)) {
     throw new AppError("Invalid product id", 400);
   }
-  await User.updateOne({ _id: userId }, { $pull: { wishlist: productId } });
+  const result = await User.updateOne({ _id: userId, wishlist: productId }, { $pull: { wishlist: productId } });
+  return result.matchedCount > 0;
 }

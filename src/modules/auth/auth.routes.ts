@@ -1,11 +1,44 @@
 import { Router } from "express";
-import { sendOtp, verifyOtp, googleAuth, getMe, logout, updateMe } from "./auth.controller";
-import { sendOtpSchema, verifyOtpSchema, updateMeSchema, googleAuthSchema } from "./auth.validation";
+import {
+  sendOtp,
+  verifyOtp,
+  googleAuth,
+  getMe,
+  logout,
+  updateMe,
+  register,
+  login,
+  verifyEmail,
+  resendVerification,
+  forgotPassword,
+  resetPassword,
+} from "./auth.controller";
+import {
+  sendOtpSchema,
+  verifyOtpSchema,
+  updateMeSchema,
+  googleAuthSchema,
+  registerSchema,
+  loginSchema,
+  verifyEmailSchema,
+  resendVerificationSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} from "./auth.validation";
 import {
   validateBody,
   otpIpLimiter,
   otpPhoneLimiter,
   requireAuth,
+  registerIpLimiter,
+  loginIpLimiter,
+  loginEmailLimiter,
+  resendVerificationIpLimiter,
+  resendVerificationEmailLimiter,
+  verifyEmailLimiter,
+  forgotPasswordIpLimiter,
+  forgotPasswordEmailLimiter,
+  resetPasswordLimiter,
 } from "../../common/middleware";
 
 const router = Router();
@@ -29,6 +62,35 @@ router.post(
 // Same per-IP limiter as the OTP routes — a login endpoint that mints a
 // session, so it gets the same brute-force ceiling.
 router.post("/google", otpIpLimiter, validateBody(googleAuthSchema), googleAuth);
+
+// --- Email/password + email verification -------------------------------------
+// Limiters that key on the email run AFTER validateBody so they see the
+// normalized address (case/whitespace variants share one bucket).
+router.post("/register", registerIpLimiter, validateBody(registerSchema), register);
+
+router.post("/login", loginIpLimiter, validateBody(loginSchema), loginEmailLimiter, login);
+
+// POST (not GET): consuming a single-use token and minting a session must not
+// be triggerable by a link prefetcher/email scanner or a cross-site <img>.
+router.post("/verify-email", verifyEmailLimiter, validateBody(verifyEmailSchema), verifyEmail);
+
+router.post(
+  "/resend-verification",
+  resendVerificationIpLimiter,
+  validateBody(resendVerificationSchema),
+  resendVerificationEmailLimiter,
+  resendVerification
+);
+
+router.post(
+  "/forgot-password",
+  forgotPasswordIpLimiter,
+  validateBody(forgotPasswordSchema),
+  forgotPasswordEmailLimiter,
+  forgotPassword
+);
+
+router.post("/reset-password", resetPasswordLimiter, validateBody(resetPasswordSchema), resetPassword);
 
 router.get("/me", requireAuth, getMe);
 
