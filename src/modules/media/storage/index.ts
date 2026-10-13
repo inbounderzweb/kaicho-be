@@ -1,6 +1,7 @@
 import { env } from "../../../config/env";
 import { CloudinaryStorageProvider } from "./CloudinaryStorageProvider";
 import { LocalStorageProvider, getMediaRoot } from "./LocalStorageProvider";
+import { R2StorageProvider } from "./R2StorageProvider";
 import type { StorageProvider } from "./types";
 
 export type { StorageProvider } from "./types";
@@ -12,11 +13,13 @@ export { getMediaRoot };
 // that calls getStorageProvider() changes.
 export function getStorageProvider(): StorageProvider {
   switch (env.storageProvider) {
+    case "r2":
+      return new R2StorageProvider();
     case "cloudinary":
       return new CloudinaryStorageProvider();
     case "local":
       return new LocalStorageProvider();
     default:
-      throw new Error(`Unknown STORAGE_PROVIDER: "${env.storageProvider}" (expected "local" or "cloudinary")`);
+      throw new Error(`Unknown STORAGE_PROVIDER: "${env.storageProvider}" (expected "local", "r2" or "cloudinary")`);
   }
 }

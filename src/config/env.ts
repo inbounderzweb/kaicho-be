@@ -136,16 +136,23 @@ export const env = {
   googleClientId: process.env.GOOGLE_CLIENT_ID || undefined,
 
   // "local" writes to disk under mediaBasePath, served by app.ts's static
-  // mount. "cloudinary" ships the same bytes to a Cloudinary bucket instead —
-  // see modules/media/storage/CloudinaryStorageProvider.ts. Nothing else in
+  // mount. "r2" ships the same bytes to a Cloudflare R2 bucket instead —
+  // see modules/media/storage/R2StorageProvider.ts. Nothing else in
   // the app needs to change when switching; every consumer goes through
   // getStorageProvider() (modules/media/storage/index.ts).
-  storageProvider: required("STORAGE_PROVIDER", "local") as "local" | "cloudinary",
+  storageProvider: required("STORAGE_PROVIDER", "local") as "local" | "r2" | "cloudinary",
   mediaBasePath: required("MEDIA_BASE_PATH", "uploads/media"),
-  // Only required when storageProvider is "cloudinary" (validated there, not
-  // here, so "local" dev/test setups never need these set). Get these from
-  // the Cloudinary dashboard (Settings → API Keys) — never commit real
-  // values, only placeholders belong in .env.example.
+  // Only required when storageProvider is "r2" (validated there, not here, so
+  // "local" dev/test setups never need these set). Never commit real values,
+  // only placeholders belong in .env.example.
+  r2AccountId: process.env.R2_ACCOUNT_ID || undefined,
+  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || undefined,
+  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || undefined,
+  r2Bucket: process.env.R2_BUCKET || undefined,
+  // Public base URL objects are served from (custom domain or r2.dev URL).
+  r2PublicUrl: process.env.R2_PUBLIC_URL || undefined,
+  // Only required when storageProvider is "cloudinary" (validated in
+  // CloudinaryStorageProvider).
   cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME || undefined,
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || undefined,
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || undefined,
@@ -224,4 +231,19 @@ export const env = {
   // secrets → Create — NOT the same thing as the GTM container ID.
   ga4MeasurementId: required("GA4_MEASUREMENT_ID", ""),
   ga4ApiSecret: required("GA4_API_SECRET", ""),
+
+  // WhatsApp Cloud API (Meta). Blank = webhook endpoint rejects everything
+  // (fails closed). VERIFY_TOKEN is any string you invent and also type into
+  // Meta's "Verify token" box; APP_SECRET (App settings -> Basic) signs every
+  // POST via X-Hub-Signature-256.
+  whatsappVerifyToken: required("WHATSAPP_VERIFY_TOKEN", ""),
+  whatsappAppSecret: required("WHATSAPP_APP_SECRET", ""),
+  whatsappAccessToken: required("WHATSAPP_ACCESS_TOKEN", ""),
+  whatsappPhoneNumberId: required("WHATSAPP_PHONE_NUMBER_ID", ""),
+  whatsappBusinessAccountId: required("WHATSAPP_BUSINESS_ACCOUNT_ID", ""),
+  // Approved Authentication template used for OTPs (WhatsApp Manager ->
+  // Message templates). Its body must take one {{1}} parameter (the code).
+  whatsappOtpTemplate: required("WHATSAPP_OTP_TEMPLATE", "otp_code"),
+  whatsappTemplateLang: required("WHATSAPP_TEMPLATE_LANG", "en"),
+  whatsappApiVersion: required("WHATSAPP_API_VERSION", "v21.0"),
 };

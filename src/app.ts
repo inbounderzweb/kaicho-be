@@ -69,7 +69,7 @@ app.use(express.static(path.resolve(__dirname, "../public"), { maxAge: "1h" }));
 // Media keys are content-addressed UUIDs that never change once written, so
 // they can be cached hard and forever — a repeat image view then costs zero
 // bytes and never reaches Node. Only relevant for local disk storage — a
-// cloud provider (Cloudinary etc.) serves files from its own CDN and needs
+// cloud provider (Cloudflare R2 etc.) serves files from its own public URL and needs
 // no route here at all.
 if (env.storageProvider === "local") {
   app.use(
