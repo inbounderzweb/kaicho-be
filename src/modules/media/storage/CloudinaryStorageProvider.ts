@@ -1,27 +1,15 @@
-import { v2 as cloudinary, type UploadApiErrorResponse } from "cloudinary";
+import { v2 as cloudinary } from "cloudinary";
 import { env } from "../../../config/env";
 import type { StorageProvider } from "./types";
 
-// Every asset that reaches this provider has already been processed by our
-// own pipeline (sharp-generated image variants, or a PDF stored as-is — see
-// media.service.ts), so Cloudinary is used purely as bucket storage here, not
-// as an image-transformation CDN. "raw" resource type stores each key's
-// bytes verbatim and serves them back from the exact same public_id, with no
-// format-guessing from the dots in the key (image/video resource types would
-// otherwise try to interpret the trailing ".webp"/".png" as a transform).
-const RESOURCE_TYPE = "raw" as const;
-
-// The Admin API (cloudinary.api.*) rejects with the http_code nested under
-// `.error`, not at the top level — unlike the Upload API's callback-style
-// errors (UploadApiErrorResponse), which do carry it at the top. Checking
-// both shapes keeps this correct regardless of which API produced the error.
-function isNotFoundError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const candidate = err as Partial<UploadApiErrorResponse> & { error?: { http_code?: number } };
-  return candidate.http_code === 404 || candidate.error?.http_code === 404;
-}
-
+// Every asset reaching this provider is already processed by our own pipeline
+// (sharp variants, or a PDF as-is — see media.service.ts), so Cloudinary is
+// used purely as file storage: everything is uploaded as resource_type "raw",
+// which keeps the key (extension included) as the public_id and skips
+// Cloudinary's own transformations. That makes getUrl() a pure string build.
 export class CloudinaryStorageProvider implements StorageProvider {
+  private readonly baseUrl: string;
+
   constructor() {
     if (!env.cloudinaryCloudName || !env.cloudinaryApiKey || !env.cloudinaryApiSecret) {
       throw new Error(
@@ -35,12 +23,19 @@ export class CloudinaryStorageProvider implements StorageProvider {
       api_secret: env.cloudinaryApiSecret,
       secure: true,
     });
+    this.baseUrl = `https://res.cloudinary.com/${env.cloudinaryCloudName}/raw/upload`;
   }
 
-  upload(key: string, buffer: Buffer): Promise<void> {
-    return new Promise((resolve, reject) => {
+  async upload(key: string, buffer: Buffer): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
-        { public_id: key, resource_type: RESOURCE_TYPE, overwrite: true },
+        {
+          public_id: key,
+          resource_type: "raw",
+          use_filename: false,
+          unique_filename: false,
+          overwrite: true,
+        },
         (err) => (err ? reject(err) : resolve())
       );
       stream.end(buffer);
@@ -49,35 +44,26 @@ export class CloudinaryStorageProvider implements StorageProvider {
 
   async read(key: string): Promise<Buffer> {
     const res = await fetch(this.getUrl(key));
-    if (!res.ok) {
-      throw new Error(`Cloudinary read failed for "${key}": HTTP ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`Cloudinary read failed for "${key}": HTTP ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
   }
 
   async delete(key: string): Promise<void> {
-    const result = await cloudinary.uploader.destroy(key, {
-      resource_type: RESOURCE_TYPE,
-      invalidate: true,
-    });
-    // Cloudinary resolves (rather than rejects) for an unknown public_id —
-    // "not found" is the equivalent of the local provider's ENOENT no-op.
-    if (result.result !== "ok" && result.result !== "not found") {
-      throw new Error(`Cloudinary delete failed for "${key}": ${result.result}`);
-    }
+    // "not found" is a successful no-op, matching the other providers.
+    await cloudinary.uploader.destroy(key, { resource_type: "raw", invalidate: true });
   }
 
   async exists(key: string): Promise<boolean> {
     try {
-      await cloudinary.api.resource(key, { resource_type: RESOURCE_TYPE });
+      await cloudinary.api.resource(key, { resource_type: "raw" });
       return true;
     } catch (err) {
-      if (isNotFoundError(err)) return false;
+      if ((err as { http_code?: number })?.http_code === 404) return false;
       throw err;
     }
   }
 
   getUrl(key: string): string {
-    return cloudinary.url(key, { resource_type: RESOURCE_TYPE, secure: true });
+    return `${this.baseUrl}/${key}`;
   }
 }

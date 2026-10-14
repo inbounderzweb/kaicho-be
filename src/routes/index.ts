@@ -35,6 +35,7 @@ import adminInquiryRoutes from "../modules/inquiry/inquiry.routes";
 import inquiryPublicRoutes from "../modules/inquiry/inquiryPublic.routes";
 import adminSettingsRoutes from "../modules/settings/settings.routes";
 import settingsPublicRoutes from "../modules/settings/settingsPublic.routes";
+import whatsappRoutes from "../modules/whatsapp/whatsapp.routes";
 import locationRoutes from "../modules/location/location.routes";
 import { publicCache } from "../common/middleware";
 
@@ -122,5 +123,6 @@ router.use("/checkout", checkoutRoutes);
 router.use("/coupons", couponRoutes);
 router.use("/orders", orderRoutes);
 router.use("/payments", paymentRoutes);
+router.use("/whatsapp", whatsappRoutes);
 
 export default router;
