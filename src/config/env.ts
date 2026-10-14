@@ -149,6 +149,14 @@ export const env = {
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || undefined,
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || undefined,
   r2Bucket: process.env.R2_BUCKET || undefined,
+  // Top-level folder inside the bucket, so dev and prod data never mix even
+  // on one bucket. Defaults to "production" when NODE_ENV=production, else
+  // "development"; override with R2_KEY_PREFIX. Applied inside the R2
+  // provider only — stored storageKeys stay prefix-free.
+  r2KeyPrefix: (
+    process.env.R2_KEY_PREFIX ||
+    (process.env.NODE_ENV === "production" ? "production" : "development")
+  ).replace(/^\/+|\/+$/g, ""),
   // Public base URL objects are served from (custom domain or r2.dev URL).
   r2PublicUrl: process.env.R2_PUBLIC_URL || undefined,
   // Only required when storageProvider is "cloudinary" (validated in

@@ -33,6 +33,7 @@ export class R2StorageProvider implements StorageProvider {
   private readonly client: S3Client;
   private readonly bucket: string;
   private readonly publicUrl: string;
+  private readonly prefix: string;
 
   constructor() {
     if (
@@ -49,6 +50,7 @@ export class R2StorageProvider implements StorageProvider {
     }
     this.bucket = env.r2Bucket;
     this.publicUrl = env.r2PublicUrl.replace(/\/+$/, "");
+    this.prefix = env.r2KeyPrefix ? `${env.r2KeyPrefix}/` : "";
     this.client = new S3Client({
       region: "auto",
       endpoint: `https://${env.r2AccountId}.r2.cloudflarestorage.com`,
@@ -59,11 +61,16 @@ export class R2StorageProvider implements StorageProvider {
     });
   }
 
+  // Namespaces every object under development/ or production/ (see env.ts).
+  private k(key: string): string {
+    return `${this.prefix}${key}`;
+  }
+
   async upload(key: string, buffer: Buffer): Promise<void> {
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
-        Key: key,
+        Key: this.k(key),
         Body: buffer,
         ContentType: CONTENT_TYPES[path.extname(key).toLowerCase()] ?? "application/octet-stream",
         // Keys are uuid-based and never rewritten, so cache hard.
@@ -73,19 +80,19 @@ export class R2StorageProvider implements StorageProvider {
   }
 
   async read(key: string): Promise<Buffer> {
-    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: this.k(key) }));
     if (!res.Body) throw new Error(`R2 read failed for "${key}": empty body`);
     return Buffer.from(await res.Body.transformToByteArray());
   }
 
   async delete(key: string): Promise<void> {
     // S3-style delete is already a no-op for a missing key.
-    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: this.k(key) }));
   }
 
   async exists(key: string): Promise<boolean> {
     try {
-      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: this.k(key) }));
       return true;
     } catch (err) {
       if (isNotFoundError(err)) return false;
@@ -94,6 +101,6 @@ export class R2StorageProvider implements StorageProvider {
   }
 
   getUrl(key: string): string {
-    return `${this.publicUrl}/${key}`;
+    return `${this.publicUrl}/${this.k(key)}`;
   }
 }
