@@ -100,6 +100,7 @@ export interface NewOrderNotificationPayload {
   amount: number;
   itemsCount: number;
   createdAt: string;
+  confirmedAt?: string;
 }
 
 // A no-op (not a throw) when Socket.IO was never initialized or nobody is

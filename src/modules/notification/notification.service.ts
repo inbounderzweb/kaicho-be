@@ -27,9 +27,14 @@ export async function notifyAdminsNewOrder(doc: OrderDocument): Promise<void> {
     amount: doc.pricing.grandTotal,
     itemsCount: doc.items.length,
     createdAt: doc.createdAt.toISOString(),
+    confirmedAt: (doc.statusHistory.find((entry) => entry.status === "CONFIRMED")?.at ?? doc.createdAt).toISOString(),
   };
 
-  emitNewOrderNotification(payload);
+  try {
+    emitNewOrderNotification(payload);
+  } catch (err) {
+    console.error(`[notification] Failed to emit new-order alert for ${doc.orderNumber}:`, err instanceof Error ? err.message : "unknown error");
+  }
   await sendNewOrderEmail({
     orderNumber: payload.orderNumber,
     customerName,

@@ -251,6 +251,8 @@ export interface OrderDocument extends Document {
   coupon?: OrderCoupon;
   idempotencyKey?: string;
   statusHistory: OrderStatusHistoryEntry[];
+  // Acknowledged orders, per admin: timestamps alone miss delayed DB commits.
+  adminNotificationReadBy?: Types.ObjectId[];
   cancelReason?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -424,6 +426,7 @@ const OrderSchema = new Schema<OrderDocument>(
     idempotencyKey: { type: String, unique: true, sparse: true },
 
     statusHistory: { type: [OrderStatusHistorySchema], default: [] },
+    adminNotificationReadBy: { type: [Schema.Types.ObjectId], ref: "User", default: undefined },
     cancelReason: { type: String },
   },
   { timestamps: true }
@@ -433,6 +436,8 @@ OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ status: 1 });
 OrderSchema.index({ paymentStatus: 1 });
 OrderSchema.index({ createdAt: -1 });
+// Durable admin new-order feed: excludes abandoned online checkouts.
+OrderSchema.index({ "statusHistory.status": 1, "statusHistory.at": -1 });
 // Webhook lookups arrive keyed only by Razorpay's own ids.
 OrderSchema.index({ "payment.razorpayOrderId": 1 });
 OrderSchema.index({ "payment.razorpayPaymentId": 1 });

@@ -65,9 +65,9 @@ async function startHttpServer() {
   // to the same underlying server instead of opening a second port. Note:
   // with WEB_CONCURRENCY > 1 each cluster worker gets its own in-memory
   // Socket.IO instance with no shared adapter, so an admin socket connected
-  // to worker A won't hear about an order created on worker B — fine at the
-  // current single-worker dev/prod setting, but would need a Redis adapter
-  // (socket.io-adapter) before scaling workers.
+  // to worker A won't hear an immediate event from worker B. The admin
+  // notification feed recovers these events through polling; a shared
+  // adapter would make cross-worker delivery immediate as well.
   // Flush buffered interaction events on SIGTERM/SIGINT before exiting.
   registerInteractionShutdownFlush();
   const httpServer = http.createServer(app);

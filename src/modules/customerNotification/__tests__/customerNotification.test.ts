@@ -83,7 +83,9 @@ describe("customer order notifications", () => {
   it("shows admin status updates, newest first, as unread", async () => {
     const u = await makeUser();
     const order = await makeOrder(u._id);
-    expect((await get(u)).body.data).toEqual({ items: [], unreadCount: 0 }); // placing an order is not a notification
+    expect((await get(u)).body.data.items).toEqual([
+      expect.objectContaining({ status: "CONFIRMED", message: "has been confirmed", unread: true }),
+    ]);
 
     await updateOrderStatusAdmin(order._id.toString(), adminId(), "PROCESSING");
     await saveShipment(order._id.toString(), adminId(), { carrier: "Delhivery", trackingNumber: "AWB123456789", status: "SHIPPED" });
@@ -104,12 +106,12 @@ describe("customer order notifications", () => {
     const u = await makeUser();
     const order = await makeOrder(u._id);
     await updateOrderStatusAdmin(order._id.toString(), adminId(), "PROCESSING");
-    expect((await get(u)).body.data.unreadCount).toBe(1);
+    expect((await get(u)).body.data.unreadCount).toBe(2);
 
     expect((await request(app).post("/api/notifications/read").set("Cookie", cookie(u))).status).toBe(200);
     const after = (await get(u)).body.data;
     expect(after.unreadCount).toBe(0);
-    expect(after.items).toHaveLength(1); // still listed, just read
+    expect(after.items).toHaveLength(2); // still listed, just read
 
     await new Promise((r) => setTimeout(r, 20));
     await saveShipment(order._id.toString(), adminId(), { carrier: "DTDC", trackingNumber: "AWB987654321", status: "SHIPPED" });
@@ -120,20 +122,40 @@ describe("customer order notifications", () => {
     const u = await makeUser();
     const order = await makeOrder(u._id);
     await cancelOrderForUser(u._id.toString(), order.orderNumber);
-    expect((await get(u)).body.data).toEqual({ items: [], unreadCount: 0 });
+    expect((await get(u)).body.data.items.map((item: { status: string }) => item.status)).toEqual(["CONFIRMED"]);
 
     const other = await makeOrder(u._id);
     await updateOrderStatusAdmin(other._id.toString(), adminId(), "CANCELLED", "Out of stock");
     const items = (await get(u)).body.data.items;
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ orderNumber: other.orderNumber, status: "CANCELLED" });
+    expect(items.filter((item: { status: string }) => item.status === "CANCELLED")).toEqual([
+      expect.objectContaining({ orderNumber: other.orderNumber, status: "CANCELLED" }),
+    ]);
   });
 
   it("only ever returns the caller's own orders", async () => {
     const a = await makeUser();
     const b = await makeUser();
     await updateOrderStatusAdmin((await makeOrder(a._id))._id.toString(), adminId(), "PROCESSING");
-    expect((await get(a)).body.data.items).toHaveLength(1);
+    expect((await get(a)).body.data.items).toHaveLength(2);
     expect((await get(b)).body.data).toEqual({ items: [], unreadCount: 0 });
+  });
+
+  it("only acknowledges an online checkout after payment confirmation", async () => {
+    const u = await makeUser();
+    const order = await makeOrder(u._id, "PENDING_PAYMENT");
+    expect((await get(u)).body.data).toEqual({ items: [], unreadCount: 0 });
+
+    await updateOrderStatusAdmin(order._id.toString(), adminId(), "CONFIRMED");
+    expect((await get(u)).body.data.items).toEqual([
+      expect.objectContaining({ orderNumber: order.orderNumber, status: "CONFIRMED", unread: true }),
+    ]);
+  });
+
+  it("acknowledges successful placement even when the customer is the recorded actor", async () => {
+    const u = await makeUser();
+    const order = await makeOrder(u._id);
+    order.statusHistory[0].actor = u._id;
+    await order.save();
+    expect((await get(u)).body.data.items).toHaveLength(1);
   });
 });

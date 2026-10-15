@@ -156,12 +156,13 @@ describe("order status emails", () => {
     expect(sendEmail.mock.calls[0][0].subject).toContain("cancelled");
   });
 
-  it("does not email for statuses the customer is not notified about", async () => {
+  it("emails an order confirmation when an admin confirms a pending order", async () => {
     const u = await makeCustomer();
     const order = await makeOrder(u._id, "PENDING_PAYMENT");
     await updateOrderStatusAdmin(order._id.toString(), undefined, "CONFIRMED");
-    await settle();
-    expect(sendEmail).not.toHaveBeenCalled();
+    await waitForEmails(1);
+    expect(sendEmail.mock.calls[0][0].subject).toContain("is confirmed");
+    expect(sendEmail.mock.calls[0][0].text).toContain(order.orderNumber);
   });
 
   it("skips customers with no email or an unverified one", async () => {

@@ -36,6 +36,7 @@ import {
 import { createRazorpayOrder } from "../../common/payments/razorpay";
 import { getShippingPolicy, getDefaultPackRecommendationStrategy } from "../settings/settings.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
+import { notifyOrderStatusChange } from "../order/orderStatusNotification";
 import { trackServerPurchase } from "../../common/analytics/ga4";
 import { interactionTrackingService } from "../interaction/interaction.tracking.service";
 import type { CheckoutPreviewInput, CreateCheckoutInput } from "./checkout.validation";
@@ -786,6 +787,7 @@ export async function createCheckout(
     // payment.service.ts confirms them, which is where the equivalent calls
     // live for that path.
     if (order.status === "CONFIRMED") {
+      notifyOrderStatusChange(order, "PENDING_PAYMENT");
       notifyAdminsNewOrder(order).catch((err) => {
         console.error("[notification] new-order notify failed", err);
       });

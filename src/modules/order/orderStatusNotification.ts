@@ -3,10 +3,11 @@ import { OrderDocument, OrderStatus, User } from "../../database/models";
 import { sendEmail, maskEmail } from "../../common/email/email.service";
 import { orderStatusEmail, type OrderEmailStatus } from "../../common/email/templates";
 
-// Statuses the customer is told about when an ADMIN moves their order there.
-// Deliberately not here: PENDING_PAYMENT / CONFIRMED (checkout's own flow),
-// and RETURN_REQUESTED (the customer's own action).
+// Customer-visible milestones, including the first successful confirmation
+// from COD checkout or a captured online payment. An unpaid checkout and a
+// customer's own return request are not confirmation events.
 export const NOTIFY_STATUSES: ReadonlySet<OrderStatus> = new Set([
+  "CONFIRMED",
   "PROCESSING",
   "SHIPPED",
   "OUT_FOR_DELIVERY",
@@ -22,7 +23,7 @@ function formatDate(date: Date): string {
   return date.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
 }
 
-// Call AFTER the status change is saved. Emails the customer once, for the
+// Call AFTER the status change is saved. Emails the customer for the
 // FINAL status (a shipment update can advance an order several steps in one
 // save - they get one message, not three). Does nothing if the status didn't
 // change. Fire-and-forget: never awaited, never throws, and an email problem
@@ -42,7 +43,10 @@ export function notifyOrderStatusChange(doc: OrderDocument, previous: OrderStatu
 
 async function send(doc: OrderDocument): Promise<void> {
   const user = await User.findById(doc.userId).select("email emailVerified firstName lastName").lean();
-  if (!user?.email || user.emailVerified !== true) return;
+  if (!user?.email || user.emailVerified !== true) {
+    console.info(`[order] status email skipped for ${doc.orderNumber}: ${user?.email ? "customer email is not verified" : "customer has no email address"}`);
+    return;
+  }
 
   const base = env.appUrl ?? env.frontendOrigins[0];
   const shipment = doc.shipment;

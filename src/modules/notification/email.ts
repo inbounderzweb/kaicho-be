@@ -1,20 +1,5 @@
-import nodemailer, { type Transporter } from "nodemailer";
 import { env } from "../../config/env";
-
-let transporter: Transporter | null = null;
-
-function getTransporter(): Transporter | null {
-  if (!env.smtpHost || !env.smtpUser || !env.smtpPass) return null;
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: env.smtpHost,
-      port: env.smtpPort,
-      secure: env.smtpPort === 465,
-      auth: { user: env.smtpUser, pass: env.smtpPass },
-    });
-  }
-  return transporter;
-}
+import { sendEmail } from "../../common/email/email.service";
 
 export interface NewOrderEmailDetails {
   orderNumber: string;
@@ -23,32 +8,43 @@ export interface NewOrderEmailDetails {
   itemsCount: number;
 }
 
-// Never throws — a broken/unset SMTP config must not affect order placement,
-// only mean the email leg of the notification silently doesn't fire (the
-// Socket.IO leg and the order itself are unaffected either way).
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]!);
+}
+
+// Email errors are reported, while the saved order and in-app alert remain
+// independent. All mail uses the same bounded, observable SMTP sender.
 export async function sendNewOrderEmail(details: NewOrderEmailDetails): Promise<void> {
-  const client = getTransporter();
-  if (!client || !env.adminNotificationEmail) {
-    console.warn("[notification] SMTP or ADMIN_NOTIFICATION_EMAIL not configured — skipping new-order email");
+  const recipient = env.adminNotificationEmail.trim();
+  if (!recipient) {
+    console.warn("[notification] ADMIN_NOTIFICATION_EMAIL not configured — skipping new-order email");
     return;
   }
 
   try {
-    await client.sendMail({
-      from: env.smtpFrom || env.smtpUser,
-      to: env.adminNotificationEmail,
+    await sendEmail({
+      to: recipient,
       subject: `New order ${details.orderNumber} — ₹${details.amount}`,
+      text: [
+        "A new order has been placed.",
+        `Order: ${details.orderNumber}`,
+        `Customer: ${details.customerName}`,
+        `Items: ${details.itemsCount}`,
+        `Amount: ₹${details.amount}`,
+      ].join("\n"),
       html: `
         <p>A new order has been placed.</p>
         <ul>
-          <li><strong>Order:</strong> ${details.orderNumber}</li>
-          <li><strong>Customer:</strong> ${details.customerName}</li>
+          <li><strong>Order:</strong> ${escapeHtml(details.orderNumber)}</li>
+          <li><strong>Customer:</strong> ${escapeHtml(details.customerName)}</li>
           <li><strong>Items:</strong> ${details.itemsCount}</li>
           <li><strong>Amount:</strong> ₹${details.amount}</li>
         </ul>
       `,
     });
   } catch (err) {
-    console.error("[notification] Failed to send new-order email", err);
+    console.error(`[notification] Failed to send new-order email for ${details.orderNumber}:`, err instanceof Error ? err.message : "unknown error");
   }
 }

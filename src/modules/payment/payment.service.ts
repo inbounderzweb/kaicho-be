@@ -1,9 +1,10 @@
 import { AppError } from "../../common/errors";
-import { Order, OrderDocument } from "../../database/models";
+import { Order, OrderDocument, type OrderPaymentStatus } from "../../database/models";
 import { verifyPaymentSignature, verifyWebhookSignature } from "../../common/payments/razorpay";
 import { restoreStockForOrder, toGa4PurchaseParams, toOrderDto } from "../order/order.service";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
+import { notifyOrderStatusChange } from "../order/orderStatusNotification";
 import { trackServerPurchase } from "../../common/analytics/ga4";
 import { interactionTrackingService } from "../interaction/interaction.tracking.service";
 import type { VerifyPaymentInput } from "./payment.validation";
@@ -11,40 +12,65 @@ import type { VerifyPaymentInput } from "./payment.validation";
 // Two independent paths can mark an order paid: the browser handback
 // (verifyPayment, fast, but only runs if the customer's tab survives) and the
 // webhook (slower, but Razorpay retries it until we 2xx). Both funnel through
-// markOrderPaid, whose "already PAID → no-op" guard is what makes running
+// markOrderPaid, whose atomic "already settled → no-op" guard makes running
 // both — in either order, any number of times — safe.
 
-function markOrderPaid(doc: OrderDocument, razorpayPaymentId: string, razorpaySignature?: string): boolean {
-  if (doc.paymentStatus === "PAID") return false;
+const SETTLED_PAYMENT_STATUSES: OrderPaymentStatus[] = ["PAID", "REFUNDED", "PARTIALLY_REFUNDED"];
 
-  doc.paymentStatus = "PAID";
-  doc.payment = {
-    ...(doc.payment ?? {}),
-    razorpayPaymentId,
-    ...(razorpaySignature ? { razorpaySignature } : {}),
-    paidAt: new Date(),
+async function markOrderPaid(
+  doc: OrderDocument,
+  razorpayPaymentId: string,
+  razorpaySignature?: string
+): Promise<{ order: OrderDocument; changed: boolean; justConfirmed: boolean }> {
+  if (SETTLED_PAYMENT_STATUSES.includes(doc.paymentStatus)) return { order: doc, changed: false, justConfirmed: false };
+
+  const at = new Date();
+  const paymentFields = {
+    paymentStatus: "PAID" as const,
+    "payment.razorpayPaymentId": razorpayPaymentId,
+    ...(razorpaySignature ? { "payment.razorpaySignature": razorpaySignature } : {}),
+    "payment.paidAt": at,
   };
+  const unpaid = { _id: doc._id, paymentStatus: { $nin: SETTLED_PAYMENT_STATUSES } };
 
-  // A cancelled order that somehow gets paid is NOT dragged back to
-  // CONFIRMED — its stock was already released, so confirming it would
-  // promise inventory that may no longer exist. It's recorded as paid and
-  // left for an admin to refund.
-  if (doc.status === "PENDING_PAYMENT") {
-    doc.status = "CONFIRMED";
-    doc.statusHistory.push({ status: "CONFIRMED", at: new Date(), note: "Payment received" });
-  }
-  return true;
+  // The browser and webhook can both load the same unpaid document. Claim
+  // the transition in MongoDB so exactly one may append the confirmation
+  // and trigger customer/admin delivery. A read-then-save guard races.
+  const confirmed = await Order.findOneAndUpdate(
+    { ...unpaid, status: "PENDING_PAYMENT" },
+    {
+      $set: { ...paymentFields, status: "CONFIRMED" },
+      $push: { statusHistory: { status: "CONFIRMED", at, note: "Payment received" } },
+    },
+    { returnDocument: "after" }
+  ).exec();
+  if (confirmed) return { order: confirmed, changed: true, justConfirmed: true };
+
+  // A cancelled order that gets paid keeps its cancellation: released
+  // stock cannot be promised again. This also tolerates an admin advancing
+  // the status after the original read, without overwriting their change.
+  const paid = await Order.findOneAndUpdate(
+    { ...unpaid, status: { $ne: "PENDING_PAYMENT" } },
+    { $set: paymentFields },
+    { returnDocument: "after" }
+  ).exec();
+  if (paid) return { order: paid, changed: true, justConfirmed: false };
+
+  const current = await Order.findById(doc._id).exec();
+  if (!current) throw new AppError("Order not found", 404);
+  return { order: current, changed: false, justConfirmed: false };
 }
 
 // Fires the admin notification and the GA4 purchase event exactly once, at
 // the moment an order first becomes CONFIRMED via payment (mirrors the COD
 // branch in checkout.service.ts, which fires both at its own CONFIRMED
-// moment instead). markOrderPaid's own "already PAID -> no-op" guard means
-// `changed` is only ever true on the transition that matters here, so
+// moment instead). markOrderPaid's atomic "already settled -> no-op" guard means
+// `justConfirmed` is only true on the first pending-to-confirmed transition, so
 // neither call can double-fire for the same order across the verify +
 // webhook paths racing each other.
-function notifyIfJustConfirmed(doc: OrderDocument, changed: boolean): void {
-  if (!changed || doc.status !== "CONFIRMED") return;
+function notifyIfJustConfirmed(doc: OrderDocument, justConfirmed: boolean): void {
+  if (!justConfirmed || doc.status !== "CONFIRMED") return;
+  notifyOrderStatusChange(doc, "PENDING_PAYMENT");
   notifyAdminsNewOrder(doc).catch((err) => {
     console.error("[notification] new-order notify failed", err);
   });
@@ -72,7 +98,7 @@ export async function verifyPayment(userId: string, input: VerifyPaymentInput) {
   // Idempotent: a double-submitted verify (or one racing the webhook) is a
   // success, not an error — and deliberately skips re-verification so a
   // second call can't flip an already-settled order into a failure.
-  if (doc.paymentStatus === "PAID") {
+  if (SETTLED_PAYMENT_STATUSES.includes(doc.paymentStatus)) {
     return { order: toOrderDto(doc), alreadyVerified: true };
   }
 
@@ -85,11 +111,10 @@ export async function verifyPayment(userId: string, input: VerifyPaymentInput) {
     throw new AppError("Payment verification failed", 400);
   }
 
-  const changed = markOrderPaid(doc, input.razorpayPaymentId, input.razorpaySignature);
-  await doc.save();
-  notifyIfJustConfirmed(doc, changed);
+  const { order, changed, justConfirmed } = await markOrderPaid(doc, input.razorpayPaymentId, input.razorpaySignature);
+  notifyIfJustConfirmed(order, justConfirmed);
 
-  return { order: toOrderDto(doc), alreadyVerified: false };
+  return { order: toOrderDto(order), alreadyVerified: !changed };
 }
 
 // ---- Webhook ----
@@ -122,9 +147,8 @@ export async function handleWebhookEvent(body: RazorpayWebhookPayload): Promise<
     const entity = body.payload?.payment?.entity;
     const doc = await findOrderByRazorpayOrderId(entity?.order_id);
     if (!doc || !entity?.id) return logUnmatched(event, entity?.order_id);
-    const changed = markOrderPaid(doc, entity.id);
-    if (changed) await doc.save();
-    notifyIfJustConfirmed(doc, changed);
+    const { order, justConfirmed } = await markOrderPaid(doc, entity.id);
+    notifyIfJustConfirmed(order, justConfirmed);
     return { handled: true };
   }
 
@@ -132,19 +156,31 @@ export async function handleWebhookEvent(body: RazorpayWebhookPayload): Promise<
     const entity = body.payload?.payment?.entity;
     const doc = await findOrderByRazorpayOrderId(entity?.order_id);
     if (!doc) return logUnmatched(event, entity?.order_id);
-    // Only a still-pending payment can fail. An order already PAID (the
-    // customer retried and the second attempt succeeded) must not be
-    // downgraded by a late failure event for the first attempt.
+    // Claim the failure against current persisted state: a captured payment
+    // may have overtaken the pending read above, and duplicate failures must
+    // not restore the same stock twice.
     if (doc.paymentStatus === "PENDING") {
-      doc.paymentStatus = "FAILED";
-      if (doc.status === "PENDING_PAYMENT") {
-        await restoreStockForOrder(doc);
-        await releaseCouponForOrder(doc);
-        doc.status = "CANCELLED";
-        doc.cancelReason = "Payment failed";
-        doc.statusHistory.push({ status: "CANCELLED", at: new Date(), note: "Payment failed" });
+      const cancelled = await Order.findOneAndUpdate(
+        { _id: doc._id, paymentStatus: "PENDING", status: "PENDING_PAYMENT" },
+        {
+          $set: { paymentStatus: "FAILED", status: "CANCELLED", cancelReason: "Payment failed" },
+          $push: { statusHistory: { status: "CANCELLED", at: new Date(), note: "Payment failed" } },
+        },
+        { returnDocument: "after" }
+      ).exec();
+      if (cancelled) {
+        // These existing helpers log restoration failures as best effort.
+        // Without a DB transaction, a process exit after this claim still
+        // requires stock/coupon reconciliation; webhook retries must not
+        // duplicate restoration after a successful claim.
+        await restoreStockForOrder(cancelled);
+        await releaseCouponForOrder(cancelled);
+      } else {
+        await Order.updateOne(
+          { _id: doc._id, paymentStatus: "PENDING", status: { $ne: "PENDING_PAYMENT" } },
+          { $set: { paymentStatus: "FAILED" } }
+        );
       }
-      await doc.save();
     }
     return { handled: true };
   }

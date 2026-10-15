@@ -150,6 +150,7 @@ export function inquiryReceivedEmail(params: {
 }
 
 export type OrderEmailStatus =
+  | "CONFIRMED"
   | "PROCESSING"
   | "SHIPPED"
   | "OUT_FOR_DELIVERY"
@@ -159,6 +160,11 @@ export type OrderEmailStatus =
   | "REFUNDED";
 
 const ORDER_STATUS_COPY: Record<OrderEmailStatus, { subject: string; headline: string; body: string }> = {
+  CONFIRMED: {
+    subject: "is confirmed",
+    headline: "Thank you for your order",
+    body: "We've received your order and will let you know when it is being prepared and shipped.",
+  },
   PROCESSING: {
     subject: "is being prepared",
     headline: "We're preparing your order",

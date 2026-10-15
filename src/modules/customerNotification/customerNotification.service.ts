@@ -12,6 +12,7 @@ const MAX_ORDERS = 30;
 const MAX_ITEMS = 20;
 
 const MESSAGES: Partial<Record<OrderStatus, string>> = {
+  CONFIRMED: "has been confirmed",
   PROCESSING: "is being prepared",
   SHIPPED: "has been shipped",
   OUT_FOR_DELIVERY: "is out for delivery",
@@ -52,8 +53,9 @@ export async function listNotifications(userId: string, now = new Date()) {
     for (const entry of order.statusHistory ?? []) {
       if (!entry.status || !entry.at || entry.at < since) continue;
       if (!NOTIFY_STATUSES.has(entry.status)) continue;
-      // The customer's own action (e.g. they cancelled) isn't news to them.
-      if (entry.actor && entry.actor.toString() === userId) continue;
+      // Successful placement is an acknowledgement even if the customer
+      // initiated it; their own cancellation / return action is already known.
+      if (entry.status !== "CONFIRMED" && entry.actor && entry.actor.toString() === userId) continue;
       const showTracking =
         (entry.status === "SHIPPED" || entry.status === "OUT_FOR_DELIVERY") &&
         order.shipment?.carrier &&

@@ -224,11 +224,10 @@ export const env = {
   shiprocketEmail: required("SHIPROCKET_EMAIL", ""),
   shiprocketPassword: required("SHIPROCKET_PASSWORD", ""),
 
-  // New-order admin notifications (email leg). Empty by default so the app
-  // keeps booting without SMTP configured — notification.service.ts treats a
-  // missing host/user/pass as "email disabled" and only logs, same dev-safe
-  // pattern as the Razorpay/Shiprocket placeholders above. Any standard SMTP
-  // provider works (Gmail app password, SendGrid/Mailtrap/SES SMTP relay).
+  // Shared email delivery (auth, customer order updates and admin alerts).
+  // The app boots without SMTP; sendEmail reports missing configuration to
+  // callers, which log delivery failures without undoing saved orders.
+  // Any standard SMTP provider works (Gmail app password, SES SMTP relay).
   smtpHost: required("SMTP_HOST", ""),
   smtpPort: requiredInt("SMTP_PORT", 587),
   smtpUser: required("SMTP_USER", ""),
