@@ -263,9 +263,6 @@ async function assertReadyForActivation(doc: ProductDocument): Promise<void> {
   if (!doc.inventory || doc.inventory.stockQuantity == null || doc.inventory.stockQuantity < 0) {
     problems.push("valid inventory");
   }
-  if (!doc.seo?.title?.trim() || !doc.seo?.description?.trim() || !doc.seo?.keywords?.length) {
-    problems.push("complete SEO details (title, description, and at least one keyword)");
-  }
 
   const imageCount = await MediaUsage.countDocuments({ entityType: "PRODUCT", entityId: doc._id });
   if (imageCount === 0) problems.push("at least one product image");
@@ -417,13 +414,13 @@ export async function createProduct(input: CreateProductInput, actorId?: string)
       trackInventory: input.inventory.trackInventory ?? true,
     },
     seo: {
-      title: input.seo.title,
-      description: input.seo.description,
-      keywords: input.seo.keywords,
-      canonicalUrl: input.seo.canonicalUrl,
-      ogTitle: input.seo.ogTitle,
-      ogDescription: input.seo.ogDescription,
-      ogImageMediaId: input.seo.ogImageMediaId ? new mongoose.Types.ObjectId(input.seo.ogImageMediaId) : undefined,
+      title: input.seo?.title ?? "",
+      description: input.seo?.description ?? "",
+      keywords: input.seo?.keywords ?? [],
+      canonicalUrl: input.seo?.canonicalUrl,
+      ogTitle: input.seo?.ogTitle,
+      ogDescription: input.seo?.ogDescription,
+      ogImageMediaId: input.seo?.ogImageMediaId ? new mongoose.Types.ObjectId(input.seo.ogImageMediaId) : undefined,
     },
     status: input.status ?? "DRAFT",
     isFeatured: input.isFeatured ?? false,

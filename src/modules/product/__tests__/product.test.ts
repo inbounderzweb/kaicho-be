@@ -243,14 +243,12 @@ describe("product.validation: SEO schema rules", () => {
     inventory: { stockQuantity: 10 },
   };
 
-  it("rejects a missing SEO title/description/keywords", () => {
-    expect(createProductSchema.safeParse({ ...basePayload, seo: { ...baseSeo, title: undefined } }).success).toBe(false);
-    expect(createProductSchema.safeParse({ ...basePayload, seo: { ...baseSeo, description: undefined } }).success).toBe(
-      false
-    );
-    expect(createProductSchema.safeParse({ ...basePayload, seo: { ...baseSeo, keywords: undefined } }).success).toBe(
-      false
-    );
+  it("accepts missing or blank SEO fields (SEO is optional)", () => {
+    expect(createProductSchema.safeParse({ ...basePayload, seo: undefined }).success).toBe(true);
+    expect(createProductSchema.safeParse({ ...basePayload, seo: { ...baseSeo, title: undefined } }).success).toBe(true);
+    expect(createProductSchema.safeParse({ ...basePayload, seo: { ...baseSeo, description: "" } }).success).toBe(true);
+    expect(createProductSchema.safeParse({ ...basePayload, seo: { ...baseSeo, keywords: [] } }).success).toBe(true);
+    expect(createProductSchema.safeParse(basePayload).success).toBe(true);
   });
 
   it("rejects a too-short SEO title/description", () => {
@@ -264,7 +262,7 @@ describe("product.validation: SEO schema rules", () => {
       seo: { ...baseSeo, keywords: [" Oats ", "OATS", "  Porridge  ", ""] },
     });
     expect(result.success).toBe(true);
-    if (result.success) expect(result.data.seo.keywords).toEqual(["oats", "porridge"]);
+    if (result.success) expect(result.data.seo?.keywords).toEqual(["oats", "porridge"]);
   });
 
   it("rejects more than 20 SEO keywords", () => {
@@ -275,9 +273,10 @@ describe("product.validation: SEO schema rules", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects an empty keywords array (all entries blank after normalization)", () => {
+  it("allows an empty keywords array (all entries blank after normalization)", () => {
     const result = createProductSchema.safeParse({ ...basePayload, seo: { ...baseSeo, keywords: ["   ", ""] } });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.seo?.keywords).toEqual([]);
   });
 
   it("rejects selling price greater than MRP at the schema level", () => {

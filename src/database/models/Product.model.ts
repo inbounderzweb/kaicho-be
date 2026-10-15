@@ -112,14 +112,15 @@ const ProductInventorySchema = new Schema<ProductInventory>(
 
 const ProductSeoSchema = new Schema<ProductSeo>(
   {
-    title: { type: String, required: true, trim: true, maxlength: 70 },
-    description: { type: String, required: true, trim: true, maxlength: 200 },
+    // SEO is optional — blank title/description and no keywords are valid.
+    title: { type: String, trim: true, maxlength: 70, default: "" },
+    description: { type: String, trim: true, maxlength: 200, default: "" },
     keywords: {
       type: [String],
-      required: true,
+      default: [],
       validate: {
-        validator: (value: string[]) => Array.isArray(value) && value.length > 0 && value.length <= 20,
-        message: "Provide between 1 and 20 SEO keywords",
+        validator: (value: string[]) => Array.isArray(value) && value.length <= 20,
+        message: "Provide at most 20 SEO keywords",
       },
     },
     canonicalUrl: { type: String, trim: true, maxlength: 500 },

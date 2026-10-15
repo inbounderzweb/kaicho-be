@@ -35,16 +35,18 @@ const keywordsField = z
     }
     return normalized;
   })
-  .refine((values) => values.length >= 1, { message: "At least one SEO keyword is required" })
   .refine((values) => values.length <= 20, { message: "A maximum of 20 SEO keywords is allowed" });
 
 // Hard outer bounds only — the 30-60 / 120-160 "recommended" ranges from the
 // spec are UX guidance (character counters, non-blocking), not validation
 // rejections. See ProductDetailClient's SEO section on the frontend.
 const seoSchema = z.object({
-  title: z.string().trim().min(10, "SEO title is too short").max(70, "SEO title is too long"),
-  description: z.string().trim().min(40, "SEO description is too short").max(200, "SEO description is too long"),
-  keywords: keywordsField,
+  // SEO is optional: blank is fine, but anything entered must be within bounds.
+  title: z.union([z.literal(""), z.string().trim().min(10, "SEO title is too short").max(70, "SEO title is too long")]).optional(),
+  description: z
+    .union([z.literal(""), z.string().trim().min(40, "SEO description is too short").max(200, "SEO description is too long")])
+    .optional(),
+  keywords: keywordsField.optional(),
   canonicalUrl: z.string().trim().max(500).optional(),
   ogTitle: z.string().trim().max(70).optional(),
   ogDescription: z.string().trim().max(200).optional(),
@@ -89,7 +91,7 @@ export const createProductSchema = z.object({
     .max(20, "A maximum of 20 images is allowed"),
   pricing: pricingSchema,
   inventory: inventorySchema,
-  seo: seoSchema,
+  seo: seoSchema.optional(),
   status: z.enum(PRODUCT_STATUSES).optional(),
   isFeatured: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
@@ -115,8 +117,10 @@ const partialInventorySchema = z.object({
 });
 
 const partialSeoSchema = z.object({
-  title: z.string().trim().min(10, "SEO title is too short").max(70, "SEO title is too long").optional(),
-  description: z.string().trim().min(40, "SEO description is too short").max(200, "SEO description is too long").optional(),
+  title: z.union([z.literal(""), z.string().trim().min(10, "SEO title is too short").max(70, "SEO title is too long")]).optional(),
+  description: z
+    .union([z.literal(""), z.string().trim().min(40, "SEO description is too short").max(200, "SEO description is too long")])
+    .optional(),
   keywords: keywordsField.optional(),
   canonicalUrl: z.string().trim().max(500).optional(),
   ogTitle: z.string().trim().max(70).optional(),
