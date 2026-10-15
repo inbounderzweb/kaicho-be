@@ -24,6 +24,25 @@ function getClient(): Razorpay {
   return client;
 }
 
+// The razorpay SDK rejects with a plain object ({ statusCode, error: { code,
+// description } }), not an Error. errorHandler can't read a message off that,
+// so every failure (bad/mis-set API keys, amount out of range, gateway down)
+// surfaced to the client as an opaque 500 "Internal Server Error" with nothing
+// in the logs. Convert it into an AppError carrying Razorpay's own reason.
+function toGatewayError(err: unknown, action: string): AppError {
+  if (err instanceof AppError) return err;
+  const e = err as { statusCode?: number; error?: { code?: string; description?: string }; message?: string } | undefined;
+  const description = e?.error?.description ?? e?.message ?? "unknown error";
+  console.error(`[razorpay] ${action} failed`, { statusCode: e?.statusCode, code: e?.error?.code, description });
+  // 401 = our credentials are wrong: a server-side config problem, not the customer's request.
+  const status = e?.statusCode === 400 ? 400 : 502;
+  const message =
+    e?.statusCode === 401
+      ? "Payment gateway authentication failed. Please contact support."
+      : `Payment gateway error: ${description}`;
+  return new AppError(message, status);
+}
+
 export interface RazorpayOrderResult {
   id: string;
   amount: number;
@@ -37,11 +56,16 @@ export async function createRazorpayOrder(
   amountPaise: number,
   receipt: string
 ): Promise<RazorpayOrderResult> {
-  const order = await getClient().orders.create({
-    amount: amountPaise,
-    currency: "INR",
-    receipt,
-  });
+  let order;
+  try {
+    order = await getClient().orders.create({
+      amount: amountPaise,
+      currency: "INR",
+      receipt,
+    });
+  } catch (err) {
+    throw toGatewayError(err, "orders.create");
+  }
   return {
     id: String(order.id),
     amount: Number(order.amount),
@@ -99,10 +123,12 @@ export async function refundPayment(
   razorpayPaymentId: string,
   amountPaise?: number
 ): Promise<RazorpayRefundResult> {
-  const refund = await getClient().payments.refund(
-    razorpayPaymentId,
-    amountPaise ? { amount: amountPaise } : {}
-  );
+  let refund;
+  try {
+    refund = await getClient().payments.refund(razorpayPaymentId, amountPaise ? { amount: amountPaise } : {});
+  } catch (err) {
+    throw toGatewayError(err, "payments.refund");
+  }
   return {
     id: String(refund.id),
     amount: Number(refund.amount),
