@@ -60,6 +60,11 @@ async function authenticateAdminSocket(socket: Socket): Promise<boolean> {
 
 export function initSocket(httpServer: HttpServer): void {
   io = new IOServer(httpServer, {
+    // Matches the client (websocket only) — see useAdminOrderNotifications.
+    transports: ["websocket"],
+    // Keep the socket alive through Cloud Run / load-balancer idle timeouts.
+    pingInterval: 20_000,
+    pingTimeout: 20_000,
     cors: {
       origin: (origin, callback) => {
         if (!origin || env.frontendOrigins.includes(origin)) {
@@ -75,6 +80,7 @@ export function initSocket(httpServer: HttpServer): void {
   io.use(async (socket, next) => {
     const ok = await authenticateAdminSocket(socket).catch(() => false);
     if (!ok) {
+      console.warn("[socket] rejected unauthenticated/non-admin connection from", socket.handshake.headers.origin);
       next(new Error("Not authenticated"));
       return;
     }
@@ -83,6 +89,7 @@ export function initSocket(httpServer: HttpServer): void {
 
   io.on("connection", (socket) => {
     socket.join(ADMIN_ROOM);
+    console.log(`[socket] admin connected (${io?.sockets.adapter.rooms.get(ADMIN_ROOM)?.size ?? 0} in room)`);
   });
 }
 
@@ -100,5 +107,6 @@ export interface NewOrderNotificationPayload {
 // open the panel via the normal order list, per spec; this channel is purely
 // the "someone's watching right now" fast path.
 export function emitNewOrderNotification(payload: NewOrderNotificationPayload): void {
+  console.log(`[socket] order:new ${payload.orderNumber} -> ${io?.sockets.adapter.rooms.get(ADMIN_ROOM)?.size ?? 0} admin socket(s)`);
   io?.to(ADMIN_ROOM).emit("order:new", payload);
 }
