@@ -15,6 +15,15 @@ function requiredInt(name: string, fallback: number): number {
   return raw === undefined ? fallback : parseInt(raw, 10);
 }
 
+// Like requiredInt but allows decimals (e.g. 1.5 MB); a malformed value falls
+// back rather than becoming NaN, which would silently disable a size cap.
+function requiredNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export const env = {
   nodeEnv: required("NODE_ENV", "development"),
   port: requiredInt("PORT", 4000),
@@ -164,7 +173,7 @@ export const env = {
   cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME || undefined,
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || undefined,
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || undefined,
-  maxImageFileSizeMb: requiredInt("MAX_IMAGE_FILE_SIZE_MB", 10),
+  maxImageFileSizeMb: requiredNumber("MAX_IMAGE_FILE_SIZE_MB", 1.5),
   maxPdfFileSizeMb: requiredInt("MAX_PDF_FILE_SIZE_MB", 20),
   maxMediaFilesPerRequest: requiredInt("MAX_MEDIA_FILES_PER_REQUEST", 10),
   maxImageWidth: requiredInt("MAX_IMAGE_WIDTH", 8000),

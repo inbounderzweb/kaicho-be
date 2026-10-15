@@ -39,7 +39,7 @@ function handleMulterError(
   if (err instanceof MulterError) {
     const message =
       err.code === "LIMIT_FILE_SIZE"
-        ? "One or more files exceed the maximum allowed size"
+        ? `One or more files exceed the maximum allowed size (images up to ${env.maxImageFileSizeMb} MB, PDFs up to ${env.maxPdfFileSizeMb} MB)`
         : err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE"
           ? `Too many files — maximum is ${env.maxMediaFilesPerRequest} per request`
           : "Failed to parse uploaded files";
