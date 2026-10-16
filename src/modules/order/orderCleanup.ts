@@ -1,6 +1,7 @@
 import { Order } from "../../database/models";
 import { restoreStockForOrder } from "./order.service";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
+import { PENDING_ORDER_TTL_MS } from "./orderPaymentWindow";
 
 // Abandoned checkouts: a PENDING_PAYMENT order holds decremented stock from
 // the moment it's created, so a customer who opens the Razorpay modal and
@@ -14,7 +15,7 @@ import { releaseCouponForOrder } from "../coupon/coupon.service";
 // payment does land after cleanup, the webhook's markOrderPaid deliberately
 // refuses to drag a CANCELLED order back to CONFIRMED (see payment.service)
 // and leaves it for an admin to refund.
-export const PENDING_ORDER_TTL_MS = 30 * 60 * 1000;
+export { PENDING_ORDER_TTL_MS };
 
 export async function cancelStalePendingOrders(): Promise<{ cancelled: number; failed: number }> {
   const cutoff = new Date(Date.now() - PENDING_ORDER_TTL_MS);

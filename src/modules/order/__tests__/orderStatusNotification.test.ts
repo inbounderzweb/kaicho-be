@@ -185,4 +185,50 @@ describe("order status emails", () => {
     expect(result.status).toBe("PROCESSING");
     expect((await Order.findById(order._id).lean())!.status).toBe("PROCESSING");
   });
+
+  describe("reports the email outcome to the admin", () => {
+    // Braces matter: a returned function is run by vitest as a teardown hook.
+    beforeEach(() => {
+      sendEmail.mockResolvedValue(undefined);
+    });
+
+    it("sent: the response says the customer was emailed (and the mail was sent before the response)", async () => {
+      const u = await makeCustomer();
+      const order = await makeOrder(u._id);
+      const result = await updateOrderStatusAdmin(order._id.toString(), undefined, "PROCESSING");
+      expect(result.emailNotification.state).toBe("sent");
+      // Awaited inside the request, not left to a background task.
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+    });
+
+    it("skipped: explains a missing or unverified customer email", async () => {
+      const noEmail = await makeCustomer({ email: undefined });
+      const unverified = await makeCustomer({ emailVerified: false });
+      const a = await updateOrderStatusAdmin((await makeOrder(noEmail._id))._id.toString(), undefined, "PROCESSING");
+      const b = await updateOrderStatusAdmin((await makeOrder(unverified._id))._id.toString(), undefined, "PROCESSING");
+      expect(a.emailNotification).toMatchObject({ state: "skipped", message: expect.stringMatching(/no email address/i) });
+      expect(b.emailNotification).toMatchObject({ state: "skipped", message: expect.stringMatching(/isn't verified/i) });
+      expect(sendEmail).not.toHaveBeenCalled();
+    });
+
+    it("failed: the update still succeeds and the failure is reported", async () => {
+      sendEmail.mockRejectedValue(new Error("smtp down"));
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const u = await makeCustomer();
+      const order = await makeOrder(u._id);
+      const result = await updateOrderStatusAdmin(order._id.toString(), undefined, "PROCESSING");
+      quiet.mockRestore();
+      expect(result.status).toBe("PROCESSING");
+      expect(result.emailNotification).toMatchObject({ state: "failed", message: expect.stringMatching(/could not be sent/i) });
+    });
+
+    it("not_applicable: a change we don't email about", async () => {
+      const u = await makeCustomer();
+      const order = await makeOrder(u._id, "CONFIRMED");
+      await Order.updateOne({ _id: order._id }, { $set: { status: "RETURN_REQUESTED" } });
+      const result = await updateOrderStatusAdmin(order._id.toString(), undefined, "DELIVERED");
+      // DELIVERED is emailed; RETURN_REQUESTED->DELIVERED is the "return rejected" path.
+      expect(["sent", "not_applicable"]).toContain(result.emailNotification.state);
+    });
+  });
 });

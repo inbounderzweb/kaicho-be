@@ -200,6 +200,9 @@ export interface OrderPayment {
   razorpaySignature?: string;
   paidAt?: Date;
   refundedAmount?: number;
+  /** Gateway's reason for the most recent failed attempt (order stays payable until the window closes). */
+  lastFailureReason?: string;
+  lastFailedAt?: Date;
 }
 
 export interface OrderStatusHistoryEntry {
@@ -353,6 +356,8 @@ const OrderPaymentSchema = new Schema<OrderPayment>(
     razorpaySignature: { type: String },
     paidAt: { type: Date },
     refundedAmount: { type: Number, min: 0 },
+    lastFailureReason: { type: String, maxlength: 300 },
+    lastFailedAt: { type: Date },
   },
   { _id: false }
 );

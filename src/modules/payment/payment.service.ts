@@ -1,8 +1,8 @@
 import { AppError } from "../../common/errors";
 import { Order, OrderDocument, type OrderPaymentStatus } from "../../database/models";
-import { verifyPaymentSignature, verifyWebhookSignature } from "../../common/payments/razorpay";
-import { restoreStockForOrder, toGa4PurchaseParams, toOrderDto } from "../order/order.service";
-import { releaseCouponForOrder } from "../coupon/coupon.service";
+import { fetchRazorpayOrderPayments, verifyPaymentSignature, verifyWebhookSignature } from "../../common/payments/razorpay";
+import { paymentCutoff } from "../order/orderPaymentWindow";
+import { toGa4PurchaseParams, toOrderDto } from "../order/order.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
 import { notifyOrderStatusChange } from "../order/orderStatusNotification";
 import { trackServerPurchase } from "../../common/analytics/ga4";
@@ -117,12 +117,70 @@ export async function verifyPayment(userId: string, input: VerifyPaymentInput) {
   return { order: toOrderDto(order), alreadyVerified: !changed };
 }
 
+// ---- Retry payment on an existing pending order ----
+
+export interface PaymentRetryResult {
+  order: ReturnType<typeof toOrderDto>;
+  /** What Checkout.js needs to open the modal; null when the order turned out to be paid already. */
+  razorpayOrder: { id: string; amount: number; currency: string } | null;
+  alreadyPaid: boolean;
+}
+
+// Lets a customer pay again for an order they abandoned or whose payment
+// failed, instead of being forced to cancel and rebuild the cart.
+//
+// The SAME Razorpay order is reused (never a new one): a Razorpay order accepts
+// many attempts until one succeeds and then refuses further payments, which is
+// exactly the double-charge protection we want — a second order id would let
+// the customer pay twice for one order. Stock is already reserved by the
+// pending order, so nothing is re-reserved here.
+//
+// Everything is re-checked server-side; the UI's "Pay now" is only a hint.
+export async function startPaymentRetry(userId: string, orderNumber: string): Promise<PaymentRetryResult> {
+  const doc = await Order.findOne({ userId, orderNumber }).exec();
+  if (!doc) throw new AppError("Order not found", 404);
+
+  if (doc.paymentMethod !== "RAZORPAY") {
+    throw new AppError("This order isn't an online-payment order", 409);
+  }
+  if (SETTLED_PAYMENT_STATUSES.includes(doc.paymentStatus)) {
+    return { order: toOrderDto(doc), razorpayOrder: null, alreadyPaid: true };
+  }
+  if (doc.status !== "PENDING_PAYMENT" || doc.paymentStatus !== "PENDING" || !doc.payment?.razorpayOrderId) {
+    throw new AppError("This order can no longer be paid. Please place a new order.", 409);
+  }
+  if (paymentCutoff(doc.createdAt).getTime() <= Date.now()) {
+    throw new AppError("The payment window for this order has closed. Please place a new order.", 409);
+  }
+
+  // Reconcile before charging again: if the gateway already captured a payment
+  // for this order (handback + webhook both missed), settle it now. Otherwise
+  // the customer could be sent to pay for something they've already paid for.
+  const payments = await fetchRazorpayOrderPayments(doc.payment.razorpayOrderId);
+  const captured = payments.find((p) => p.status === "captured");
+  if (captured) {
+    const { order, justConfirmed } = await markOrderPaid(doc, captured.id);
+    notifyIfJustConfirmed(order, justConfirmed);
+    return { order: toOrderDto(order), razorpayOrder: null, alreadyPaid: true };
+  }
+
+  return {
+    order: toOrderDto(doc),
+    razorpayOrder: {
+      id: doc.payment.razorpayOrderId,
+      amount: Math.round(doc.pricing.grandTotal * 100),
+      currency: "INR",
+    },
+    alreadyPaid: false,
+  };
+}
+
 // ---- Webhook ----
 
 interface RazorpayWebhookPayload {
   event?: string;
   payload?: {
-    payment?: { entity?: { id?: string; order_id?: string } };
+    payment?: { entity?: { id?: string; order_id?: string; error_description?: string } };
     refund?: { entity?: { id?: string; payment_id?: string; amount?: number } };
   };
 }
@@ -156,31 +214,25 @@ export async function handleWebhookEvent(body: RazorpayWebhookPayload): Promise<
     const entity = body.payload?.payment?.entity;
     const doc = await findOrderByRazorpayOrderId(entity?.order_id);
     if (!doc) return logUnmatched(event, entity?.order_id);
-    // Claim the failure against current persisted state: a captured payment
-    // may have overtaken the pending read above, and duplicate failures must
-    // not restore the same stock twice.
+    // A failed ATTEMPT is not a failed ORDER. Razorpay fires this for every
+    // declined card / wrong OTP, and the customer can retry inside the same
+    // modal or from the order page. Cancelling here would kill the order
+    // mid-retry (and a later successful capture could then only be refunded).
+    // So just record why it failed; the order keeps its reserved stock until
+    // it's paid, the customer cancels, or the cleanup sweep expires it
+    // (orderCleanup.ts) — the one place abandoned stock is released.
+    // Guarded on current state so a captured payment that overtook this event
+    // is never touched.
     if (doc.paymentStatus === "PENDING") {
-      const cancelled = await Order.findOneAndUpdate(
-        { _id: doc._id, paymentStatus: "PENDING", status: "PENDING_PAYMENT" },
+      await Order.updateOne(
+        { _id: doc._id, paymentStatus: "PENDING" },
         {
-          $set: { paymentStatus: "FAILED", status: "CANCELLED", cancelReason: "Payment failed" },
-          $push: { statusHistory: { status: "CANCELLED", at: new Date(), note: "Payment failed" } },
-        },
-        { returnDocument: "after" }
-      ).exec();
-      if (cancelled) {
-        // These existing helpers log restoration failures as best effort.
-        // Without a DB transaction, a process exit after this claim still
-        // requires stock/coupon reconciliation; webhook retries must not
-        // duplicate restoration after a successful claim.
-        await restoreStockForOrder(cancelled);
-        await releaseCouponForOrder(cancelled);
-      } else {
-        await Order.updateOne(
-          { _id: doc._id, paymentStatus: "PENDING", status: { $ne: "PENDING_PAYMENT" } },
-          { $set: { paymentStatus: "FAILED" } }
-        );
-      }
+          $set: {
+            "payment.lastFailureReason": (entity?.error_description ?? "Payment failed").slice(0, 300),
+            "payment.lastFailedAt": new Date(),
+          },
+        }
+      );
     }
     return { handled: true };
   }

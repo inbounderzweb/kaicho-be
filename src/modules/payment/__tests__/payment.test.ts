@@ -346,7 +346,7 @@ describe("POST /api/payments/razorpay/webhook", () => {
     expect(afterSecond!.statusHistory.filter((h) => h.status === "CONFIRMED")).toHaveLength(1);
   });
 
-  it("cancels and restores stock on payment.failed", async () => {
+  it("keeps the order payable on payment.failed and records the reason", async () => {
     const user = await makeUser();
     const rzpOrderId = `order_${RUN_ID}_failed`;
     const order = await makePendingRazorpayOrder(user, rzpOrderId);
@@ -355,15 +355,37 @@ describe("POST /api/payments/razorpay/webhook", () => {
 
     const res = await postWebhook({
       event: "payment.failed",
-      payload: { payment: { entity: { id: `pay_${RUN_ID}_failed`, order_id: rzpOrderId } } },
+      payload: { payment: { entity: { id: `pay_${RUN_ID}_failed`, order_id: rzpOrderId, error_description: "Card declined by bank" } } },
     });
 
     expect(res.status).toBe(200);
     const doc = await Order.findById(order._id).lean();
-    expect(doc!.paymentStatus).toBe("FAILED");
-    expect(doc!.status).toBe("CANCELLED");
+    // A failed attempt is not a failed order: still PENDING_PAYMENT so the
+    // customer can retry; stock stays reserved until paid/cancelled/expired.
+    expect(doc!.status).toBe("PENDING_PAYMENT");
+    expect(doc!.paymentStatus).toBe("PENDING");
+    expect(doc!.payment!.lastFailureReason).toBe("Card declined by bank");
     const after = (await Product.findById(productId).select("inventory").lean())!.inventory.stockQuantity;
-    expect(after).toBe(before + order.items[0].quantity);
+    expect(after).toBe(before);
+  });
+
+  it("still confirms the order when a retry succeeds after a failed attempt", async () => {
+    const user = await makeUser();
+    const rzpOrderId = `order_${RUN_ID}_retry_ok`;
+    const order = await makePendingRazorpayOrder(user, rzpOrderId);
+
+    await postWebhook({
+      event: "payment.failed",
+      payload: { payment: { entity: { id: `pay_${RUN_ID}_retry_bad`, order_id: rzpOrderId } } },
+    });
+    await postWebhook({
+      event: "payment.captured",
+      payload: { payment: { entity: { id: `pay_${RUN_ID}_retry_good`, order_id: rzpOrderId } } },
+    });
+
+    const doc = await Order.findById(order._id).lean();
+    expect(doc!.status).toBe("CONFIRMED");
+    expect(doc!.paymentStatus).toBe("PAID");
   });
 
   it("does not downgrade an already-PAID order on a late payment.failed", async () => {

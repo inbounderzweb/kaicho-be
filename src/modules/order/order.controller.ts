@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { parsePagination } from "../adminDashboard/pagination";
 import { listOrdersForUser, getOrderForUser, cancelOrderForUser } from "./order.service";
+import { startPaymentRetry } from "../payment/payment.service";
 import type { CancelOrderInput } from "./order.validation";
 
 export const listOrdersHandler = asyncHandler(async (req: Request, res: Response) => {
@@ -19,4 +20,13 @@ export const cancelOrderHandler = asyncHandler(async (req: Request, res: Respons
   const { reason } = req.body as CancelOrderInput;
   const order = await cancelOrderForUser(req.userId!, String(req.params.orderNumber), reason);
   res.status(200).json({ success: true, message: "Order cancelled", data: { order } });
+});
+
+export const retryOrderPaymentHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { order, razorpayOrder, alreadyPaid } = await startPaymentRetry(req.userId!, String(req.params.orderNumber));
+  res.status(200).json({
+    success: true,
+    message: alreadyPaid ? "This order is already paid" : "Payment ready",
+    data: { order, razorpayOrder, alreadyPaid },
+  });
 });

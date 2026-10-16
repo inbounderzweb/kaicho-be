@@ -111,6 +111,23 @@ export function verifyWebhookSignature(rawBody: Buffer, signature: string): bool
   return timingSafeEqualHex(expected, signature);
 }
 
+export interface RazorpayGatewayPayment {
+  id: string;
+  status: string;
+}
+
+// Payments the gateway holds against one of OUR Razorpay orders. Used before a
+// retry is allowed: if a payment was already captured (the browser handback and
+// the webhook both got lost) the order must be settled, not charged twice.
+export async function fetchRazorpayOrderPayments(razorpayOrderId: string): Promise<RazorpayGatewayPayment[]> {
+  try {
+    const result = await getClient().orders.fetchPayments(razorpayOrderId);
+    return (result.items ?? []).map((p: { id: string; status: string }) => ({ id: String(p.id), status: String(p.status) }));
+  } catch (err) {
+    throw toGatewayError(err, "orders.fetchPayments");
+  }
+}
+
 export interface RazorpayRefundResult {
   id: string;
   amount: number;

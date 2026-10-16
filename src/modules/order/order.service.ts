@@ -17,6 +17,7 @@ import {
 } from "../../database/models";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
 import { notifyOrderStatusChange } from "./orderStatusNotification";
+import { paymentCutoff } from "./orderPaymentWindow";
 import type { Ga4PurchaseParams } from "../../common/analytics/ga4";
 
 function isValidObjectId(id: string): boolean {
@@ -82,6 +83,16 @@ export async function createOrderWithUniqueNumber(payload: NewOrderPayload): Pro
 }
 
 // ---- DTOs ----
+
+function canRetryPayment(doc: OrderDocument, now: Date = new Date()): boolean {
+  return (
+    doc.paymentMethod === "RAZORPAY" &&
+    doc.status === "PENDING_PAYMENT" &&
+    doc.paymentStatus === "PENDING" &&
+    Boolean(doc.payment?.razorpayOrderId) &&
+    paymentCutoff(doc.createdAt).getTime() > now.getTime()
+  );
+}
 
 export function toOrderDto(doc: OrderDocument) {
   return {
@@ -153,7 +164,12 @@ export function toOrderDto(doc: OrderDocument) {
       razorpayOrderId: doc.payment?.razorpayOrderId ?? null,
       paidAt: doc.payment?.paidAt ? doc.payment.paidAt.toISOString() : null,
       refundedAmount: doc.payment?.refundedAmount ?? 0,
+      lastFailureReason: doc.payment?.lastFailureReason ?? null,
     },
+    // Present only while the customer can still pay this order: unpaid online
+    // order inside its reservation window. The UI shows "Pay now" + a
+    // countdown from this; the server re-checks everything on POST /pay.
+    payBy: canRetryPayment(doc) ? paymentCutoff(doc.createdAt).toISOString() : null,
     statusHistory: doc.statusHistory.map((entry) => ({
       status: entry.status,
       at: entry.at.toISOString(),
@@ -286,31 +302,43 @@ export async function getOrderForUser(userId: string, orderNumber: string) {
 }
 
 export async function cancelOrderForUser(userId: string, orderNumber: string, reason?: string) {
-  const doc = await Order.findOne({ userId, orderNumber }).exec();
-  if (!doc) {
-    throw new AppError("Order not found", 404);
+  const cancellableFrom = (Object.keys(ORDER_STATUS_TRANSITIONS) as OrderStatus[]).filter((status) =>
+    ORDER_STATUS_TRANSITIONS[status].includes("CANCELLED")
+  );
+
+  // Claim the transition atomically. A read-check-save would let a
+  // double-click (or the cleanup sweep / a failed-payment webhook racing the
+  // customer) both pass the check and each restore the stock and release the
+  // coupon — crediting inventory twice. Only the request that wins this
+  // update goes on to undo the reservation.
+  const claimed = await Order.findOneAndUpdate(
+    { userId, orderNumber, status: { $in: cancellableFrom } },
+    {
+      $set: { status: "CANCELLED", cancelReason: reason },
+      $push: {
+        statusHistory: {
+          status: "CANCELLED",
+          at: new Date(),
+          note: reason ?? "Cancelled by customer",
+          actor: new mongoose.Types.ObjectId(userId),
+        },
+      },
+    },
+    { returnDocument: "after" }
+  ).exec();
+
+  if (!claimed) {
+    const existing = await Order.findOne({ userId, orderNumber }).select("status").lean();
+    if (!existing) throw new AppError("Order not found", 404);
+    throw new AppError(`An order that is ${humanizeStatus(existing.status)} can no longer be cancelled`, 409);
   }
 
-  if (!ORDER_STATUS_TRANSITIONS[doc.status].includes("CANCELLED")) {
-    throw new AppError(`An order that is ${humanizeStatus(doc.status)} can no longer be cancelled`, 409);
-  }
-
-  await restoreStockForOrder(doc);
+  await restoreStockForOrder(claimed);
   // Cancelling frees any coupon this order held (full reversal — the order
   // never completed). Refunds do NOT reach here and keep the redemption.
-  await releaseCouponForOrder(doc);
+  await releaseCouponForOrder(claimed);
 
-  doc.status = "CANCELLED";
-  doc.cancelReason = reason;
-  doc.statusHistory.push({
-    status: "CANCELLED",
-    at: new Date(),
-    note: reason ?? "Cancelled by customer",
-    actor: new mongoose.Types.ObjectId(userId),
-  });
-  await doc.save();
-
-  return toOrderDto(doc);
+  return toOrderDto(claimed);
 }
 
 function humanizeStatus(status: OrderStatus): string {
@@ -406,13 +434,13 @@ export async function getOrderAdmin(orderId: string) {
     throw new AppError("Order not found", 404);
   }
   const doc = await Order.findById(orderId)
-    .populate("userId", "firstName lastName phone email")
+    .populate("userId", "firstName lastName phone email emailVerified")
     .exec();
   if (!doc) {
     throw new AppError("Order not found", 404);
   }
 
-  const customer = doc.userId as unknown as (PopulatedCustomer & { email?: string }) | null;
+  const customer = doc.userId as unknown as (PopulatedCustomer & { email?: string; emailVerified?: boolean }) | null;
   return {
     ...toOrderDto(doc),
     customer:
@@ -422,6 +450,7 @@ export async function getOrderAdmin(orderId: string) {
             name: customerLabel(doc.userId),
             phone: customer.phone ?? null,
             email: customer.email ?? null,
+            emailVerified: customer.emailVerified === true,
           }
         : null,
     // Admin UI renders this as the status dropdown's option list, so the
@@ -468,9 +497,9 @@ export async function updateOrderStatusAdmin(
     actor: actorId ? new mongoose.Types.ObjectId(actorId) : undefined,
   });
   await doc.save();
-  notifyOrderStatusChange(doc, previousStatus);
+  const emailNotification = await notifyOrderStatusChange(doc, previousStatus);
 
-  return toOrderDto(doc);
+  return { ...toOrderDto(doc), emailNotification };
 }
 
 // ---- Dashboard aggregates ----

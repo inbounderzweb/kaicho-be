@@ -148,8 +148,8 @@ export async function saveShipment(
   if (targetOrderStatus) advanceOrderStatusAlongSequence(doc, targetOrderStatus, actorId);
 
   await doc.save();
-  notifyOrderStatusChange(doc, previousStatus);
-  return toOrderDto(doc);
+  const emailNotification = await notifyOrderStatusChange(doc, previousStatus);
+  return { ...toOrderDto(doc), emailNotification };
 }
 
 // Quick status-only update once a shipment exists — the courier moves the
@@ -176,6 +176,6 @@ export async function updateShipmentStatus(
   if (targetOrderStatus) advanceOrderStatusAlongSequence(doc, targetOrderStatus, actorId);
 
   await doc.save();
-  notifyOrderStatusChange(doc, previousStatus);
-  return toOrderDto(doc);
+  const emailNotification = await notifyOrderStatusChange(doc, previousStatus);
+  return { ...toOrderDto(doc), emailNotification };
 }

@@ -250,18 +250,21 @@ suite("customer confirmation delivery (isolated MongoDB)", () => {
     expect(notifyAdminsNewOrder).toHaveBeenCalledTimes(1);
   });
 
-  it("restores inventory once when duplicate failure webhooks arrive together", async () => {
+  it("keeps the order pending (stock still reserved) when duplicate failure webhooks arrive together", async () => {
     const { user, input, key } = await fixture();
     const checkout = await createCheckout(user._id.toString(), { ...input, paymentMethod: "RAZORPAY" }, key);
     const payload = await payment(checkout.order.orderId);
     const event = { ...payload.event, event: "payment.failed" };
     await Promise.all([handleWebhookEvent(event), handleWebhookEvent(event)]);
 
+    // A failed attempt must not cancel the order: the customer can pay again.
+    // Stock stays reserved (nothing restored, nothing restored twice) until the
+    // order is paid, cancelled, or expired by the cleanup sweep.
     const doc = await Order.findById(checkout.order.orderId);
-    expect(doc!.paymentStatus).toBe("FAILED");
-    expect(doc!.status).toBe("CANCELLED");
-    expect(doc!.statusHistory.filter((entry) => entry.status === "CANCELLED")).toHaveLength(1);
-    expect((await Product.findById(input.items[0].productId))!.inventory.stockQuantity).toBe(20);
+    expect(doc!.paymentStatus).toBe("PENDING");
+    expect(doc!.status).toBe("PENDING_PAYMENT");
+    expect(doc!.statusHistory.filter((entry) => entry.status === "CANCELLED")).toHaveLength(0);
+    expect((await Product.findById(input.items[0].productId))!.inventory.stockQuantity).toBe(20 - input.items[0].quantity);
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });
