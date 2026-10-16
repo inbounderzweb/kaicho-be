@@ -10,6 +10,8 @@ import {
   MediaDocument,
   MediaUsage,
   InventoryTracking,
+  MAX_PINNED_COMBOS,
+  getPinnedComboIds,
 } from "../../database/models";
 import { attachMediaToEntity, detachMedia } from "../media/media.service";
 import { getStorageProvider } from "../media/storage";
@@ -594,17 +596,32 @@ export async function getRelatedComboSettings(id: string): Promise<RelatedComboS
 
 export async function updateRelatedComboSettings(
   id: string,
-  patch: { mode?: "AUTO" | "MANUAL" | "NONE"; comboProductId?: string | null }
+  patch: { mode?: "AUTO" | "MANUAL" | "NONE"; comboProductId?: string | null; comboProductIds?: string[] }
 ): Promise<RelatedComboSettingsDto> {
   const doc = await getProductForInventoryTracking(id);
 
-  if (patch.comboProductId) {
-    if (patch.comboProductId === id) {
+  // `comboProductIds` is the multi-pin field; `comboProductId` (single / null to clear) stays for older callers.
+  const requested = patch.comboProductIds
+    ?? (patch.comboProductId !== undefined ? (patch.comboProductId ? [patch.comboProductId] : []) : undefined);
+  const requestedIds = requested ? [...new Set(requested)] : undefined;
+  if (requestedIds && requestedIds.length > MAX_PINNED_COMBOS) {
+    throw new AppError(`You can pin up to ${MAX_PINNED_COMBOS} bundles`, 400);
+  }
+
+  const nextMode = patch.mode ?? doc.relatedCombo?.mode ?? "AUTO";
+  const nextIds = requestedIds ?? getPinnedComboIds(doc.relatedCombo);
+  if (nextMode === "MANUAL" && !nextIds.length) {
+    throw new AppError("Select at least one bundle to pin, or choose Auto instead", 400);
+  }
+
+  for (const comboId of requestedIds ?? []) {
+    if (comboId === id) {
       throw new AppError("A product can't be its own related combo", 400);
     }
-    const target = await Product.exists({ _id: patch.comboProductId, "inventoryTracking.enabled": true, "inventoryTracking.components.productId": id });
+    const target = await Product.findOne({ _id: comboId, "inventoryTracking.enabled": true, "inventoryTracking.components.productId": id }).select("name").lean();
     if (!target) {
-      throw new AppError("Selected combo must include this product in its inventory components", 400);
+      const name = (await Product.findById(comboId).select("name").lean())?.name;
+      throw new AppError(`${name ? `"${name}"` : "Selected combo"} must include this product in its inventory components`, 400);
     }
   }
 
@@ -612,10 +629,9 @@ export async function updateRelatedComboSettings(
     doc.relatedCombo = { mode: "AUTO" } as unknown as ProductDocument["relatedCombo"];
   }
   if (patch.mode !== undefined) doc.relatedCombo!.mode = patch.mode;
-  if (patch.comboProductId !== undefined) {
-    doc.relatedCombo!.comboProductId = patch.comboProductId
-      ? new mongoose.Types.ObjectId(patch.comboProductId)
-      : undefined;
+  if (requestedIds !== undefined) {
+    doc.relatedCombo!.comboProductIds = requestedIds.map((comboId) => new mongoose.Types.ObjectId(comboId));
+    doc.relatedCombo!.comboProductId = requestedIds[0] ? new mongoose.Types.ObjectId(requestedIds[0]) : undefined;
   }
   await doc.save();
   return getRelatedComboSettings(id);

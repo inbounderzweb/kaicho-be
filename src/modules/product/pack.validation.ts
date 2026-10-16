@@ -84,6 +84,7 @@ export const updateRelatedComboSchema = z
   .object({
     mode: z.enum(RELATED_COMBO_MODES).optional(),
     comboProductId: objectIdField.nullable().optional(),
+    comboProductIds: z.array(objectIdField).max(4, "You can pin up to 4 bundles").optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: "At least one field must be provided" });
 

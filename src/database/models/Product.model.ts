@@ -46,7 +46,20 @@ export type RelatedComboMode = (typeof RELATED_COMBO_MODES)[number];
 // component; "NONE" suppresses the suggestion outright.
 export interface RelatedCombo {
   mode: RelatedComboMode;
+  /** Legacy single pin; kept in sync with the first entry of comboProductIds. */
   comboProductId?: Types.ObjectId;
+  /** MANUAL: the bundles to offer (ordered). */
+  comboProductIds?: Types.ObjectId[];
+}
+
+/** Max bundles that can be pinned (matches the cart popup's recommendation cap). */
+export const MAX_PINNED_COMBOS = 4;
+
+/** Every pinned bundle id, in admin order, including pins saved before multi-pin existed. */
+export function getPinnedComboIds(relatedCombo?: RelatedCombo | null): string[] {
+  if (!relatedCombo) return [];
+  const ids = [...(relatedCombo.comboProductIds ?? []), ...(relatedCombo.comboProductId ? [relatedCombo.comboProductId] : [])].map(String);
+  return [...new Set(ids)];
 }
 
 export interface ProductDocument extends Document {
@@ -135,6 +148,7 @@ const RelatedComboSchema = new Schema<RelatedCombo>(
   {
     mode: { type: String, enum: RELATED_COMBO_MODES, default: "AUTO" },
     comboProductId: { type: Schema.Types.ObjectId, ref: "Product" },
+    comboProductIds: { type: [{ type: Schema.Types.ObjectId, ref: "Product" }], default: undefined },
   },
   { _id: false }
 );

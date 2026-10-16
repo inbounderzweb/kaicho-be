@@ -59,6 +59,27 @@ describe("live smart recommendations", () => {
     await updateRelatedComboSettings(p.id, { mode: "MANUAL", comboProductId: combo.id });
     expect((await recommendSmartSelection(p.id, 1)).recommendation?.productId).toBe(combo.id);
   });
+  it("offers only the pinned bundle in MANUAL mode, not other bundles containing the product", async () => {
+    const p = await make("Pin source");
+    const pinned = await make("Pinned bundle", { sortOrder: 5, inventoryTracking: { enabled: true, components: [{ productId: p._id, quantity: 2 }] } });
+    await make("Other bundle", { sortOrder: 0, inventoryTracking: { enabled: true, components: [{ productId: p._id, quantity: 1 }] } });
+    await updateRelatedComboSettings(p.id, { mode: "MANUAL", comboProductId: pinned.id });
+    const result = await recommendSmartSelection(p.id, 1);
+    expect(result.recommendations.map((r) => r.productId)).toEqual([pinned.id]);
+    await updateRelatedComboSettings(p.id, { mode: "AUTO" });
+    expect((await recommendSmartSelection(p.id, 1)).recommendations.length).toBe(2);
+  });
+  it("offers several pinned bundles in MANUAL mode and nothing else", async () => {
+    const p = await make("Multi pin source");
+    const a = await make("Pinned A", { inventoryTracking: { enabled: true, components: [{ productId: p._id, quantity: 1 }] } });
+    const b = await make("Pinned B", { inventoryTracking: { enabled: true, components: [{ productId: p._id, quantity: 1 }] } });
+    await make("Unpinned C", { inventoryTracking: { enabled: true, components: [{ productId: p._id, quantity: 1 }] } });
+    const saved = await updateRelatedComboSettings(p.id, { mode: "MANUAL", comboProductIds: [a.id, b.id] });
+    expect(saved.combos.map((c) => c.comboProductId)).toEqual([a.id, b.id]);
+    const ids = (await recommendSmartSelection(p.id, 1)).recommendations.map((r) => r.productId).sort();
+    expect(ids).toEqual([a.id, b.id].sort());
+    await expect(updateRelatedComboSettings(p.id, { comboProductIds: [] })).rejects.toThrow(/at least one bundle/);
+  });
   it("rejects unrelated manual targets", async () => {
     const p = await make("Pinned source"); const unrelated = await make("Unrelated target");
     await expect(updateRelatedComboSettings(p.id, { mode: "MANUAL", comboProductId: unrelated.id })).rejects.toThrow(/include this product/);

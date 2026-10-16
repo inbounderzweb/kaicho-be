@@ -1,5 +1,5 @@
 import { AppError } from "../../common/errors";
-import { Category, Product, type PackConfig, type ProductDocument, type PackRecommendationStrategy } from "../../database/models";
+import { Category, Product, getPinnedComboIds, type PackConfig, type ProductDocument, type PackRecommendationStrategy } from "../../database/models";
 import { resolveLine, type PricedProduct, type RequestedLine } from "./checkout.service";
 import { calculateCombinations, getApplicablePacks, resolveEffectivePackConfig } from "../product/packCombination.service";
 import { mergeResolvedComponents, type ResolvedComponent } from "../product/inventoryTracking.service";
@@ -132,13 +132,19 @@ export async function recommendSmartSelection(productId: string, quantity: numbe
     ] }).select(fields).lean();
     const missingCategories = related.filter(p => p.packConfig?.mode === "INHERIT_CATEGORY").map(p => p.categoryId);
     if (missingCategories.length) for (const category of await Category.find({ _id: { $in: missingCategories } }).select("packConfig").lean()) context.categories.set(category._id.toString(), category);
+    // MANUAL means "offer exactly the pinned bundles": every other bundle that
+    // happens to contain the product is left out (no fallback to AUTO if a pin
+    // can't be sold).
+    const manualPins = product.relatedCombo?.mode === "MANUAL" ? getPinnedComboIds(product.relatedCombo) : [];
     for (const doc of related) {
       const candidate = doc as unknown as SourceProduct;
       const id = doc._id.toString();
+      if (manualPins.length && !manualPins.includes(id)) continue;
       context.products.set(id, candidate);
       const references = candidate.inventoryTracking?.enabled ? candidate.inventoryTracking.components.filter(c => c.productId.toString() === productId).reduce((sum, c) => sum + c.quantity, 0) : 0;
-      const pinned = product.relatedCombo?.mode === "MANUAL" && product.relatedCombo.comboProductId?.toString() === id;
-      if (references && (pinned || strategy !== "MANUAL_ONLY")) add({ productId: id, quantity: 1 }, pinned ? 0 : 3, candidate.sortOrder ?? 0, references);
+      const pinIndex = manualPins.indexOf(id);
+      const pinned = pinIndex !== -1;
+      if (references && (pinned || strategy !== "MANUAL_ONLY")) add({ productId: id, quantity: 1 }, pinned ? 0 : 3, pinned ? pinIndex : candidate.sortOrder ?? 0, references);
       addPacks(candidate, true);
     }
   }

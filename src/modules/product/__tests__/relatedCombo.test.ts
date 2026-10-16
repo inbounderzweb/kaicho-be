@@ -159,7 +159,7 @@ describe("Admin CRUD /admin/products/:id/related-combo", () => {
 
     const defaults = await request(app).get(`/api/admin/products/${product._id}/related-combo`).set("Cookie", cookie);
     expect(defaults.status).toBe(200);
-    expect(defaults.body.data.relatedCombo).toEqual({ mode: "AUTO" });
+    expect(defaults.body.data.relatedCombo).toEqual({ mode: "AUTO", combos: [] });
 
     const setManual = await request(app)
       .patch(`/api/admin/products/${product._id}/related-combo`)
@@ -170,6 +170,7 @@ describe("Admin CRUD /admin/products/:id/related-combo", () => {
       mode: "MANUAL",
       comboProductId: bundle._id.toString(),
       comboProductName: bundle.name,
+      combos: [{ comboProductId: bundle._id.toString(), comboProductName: bundle.name }],
     });
 
     const clear = await request(app)
@@ -177,7 +178,7 @@ describe("Admin CRUD /admin/products/:id/related-combo", () => {
       .set("Cookie", cookie)
       .send({ mode: "AUTO", comboProductId: null });
     expect(clear.status).toBe(200);
-    expect(clear.body.data.relatedCombo).toEqual({ mode: "AUTO" });
+    expect(clear.body.data.relatedCombo).toEqual({ mode: "AUTO", combos: [] });
   });
 
   it("rejects pointing a product at itself", async () => {
