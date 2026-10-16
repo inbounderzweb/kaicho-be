@@ -7,7 +7,12 @@ export function validateBody(schema: ZodType) {
     const result = schema.safeParse(req.body);
     if (!result.success) {
       const message = result.error.issues
-        .map((issue) => issue.message)
+        .map((issue) => {
+          // Zod's built-in fallback messages ("Invalid input…") don't say which
+          // field is wrong — name it. Custom schema messages pass through as-is.
+          const field = issue.path.join(".");
+          return field && /^Invalid input/.test(issue.message) ? `${field}: ${issue.message}` : issue.message;
+        })
         .join(", ");
       next(new AppError(message, 400));
       return;
