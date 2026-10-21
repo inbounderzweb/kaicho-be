@@ -236,8 +236,8 @@ export async function updatePopup(id: string, patch: UpdatePopupInput, adminId?:
 // ---- Status ----
 
 function assertPublishable(doc: PopupDocument): void {
-  if (!doc.content.heading?.trim() && !doc.content.body?.trim()) {
-    throw new AppError("Add a heading or body text before publishing", 400);
+  if (!doc.content.heading?.trim() && !doc.content.body?.trim() && !doc.content.imageUrl) {
+    throw new AppError("Add an image, heading or body text before publishing", 400);
   }
   if (!doc.devices.desktop.enabled && !doc.devices.mobile.enabled) {
     throw new AppError("Enable the popup on at least one device before publishing", 400);
