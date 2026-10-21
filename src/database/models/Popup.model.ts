@@ -96,6 +96,9 @@ export interface PopupDocument extends Document {
     sessionDisplayLimit: number;
     repeatIntervalSeconds: number;
     minReappearanceSeconds: number;
+    // Show on every page load / refresh and again after login, ignoring the
+    // per-session limit and any earlier dismissal.
+    showOnEveryLoad: boolean;
   };
   // Optional urgency timer (days/hours/min/sec to `endsAt`) shown inside the
   // popup. Independent of the auto-close timer and of `schedule`.
@@ -177,6 +180,7 @@ const PopupSchema = new Schema<PopupDocument>(
       sessionDisplayLimit: { type: Number, required: true, default: 1, min: 1, max: 10 },
       repeatIntervalSeconds: { type: Number, required: true, default: 0, min: 0, max: 86400 },
       minReappearanceSeconds: { type: Number, required: true, default: 30, min: 5, max: 86400 },
+      showOnEveryLoad: { type: Boolean, required: true, default: false },
     },
     countdown: {
       enabled: { type: Boolean, required: true, default: false },

@@ -51,6 +51,7 @@ const displaySchema = z.strictObject({
     L.repeatIntervalSeconds.min,
     L.repeatIntervalSeconds.max
   ),
+  showOnEveryLoad: z.boolean().optional(),
   minReappearanceSeconds: intIn(
     "Minimum reappearance delay (seconds)",
     L.minReappearanceSeconds.min,
