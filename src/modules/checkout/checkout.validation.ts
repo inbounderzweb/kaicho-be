@@ -70,9 +70,24 @@ const couponCodeField = z
   .max(40, "Coupon code is too long")
   .optional();
 
+// The customer's preferred FREE units for a BOGO offer. Like pack selections
+// this is a hint only: the server validates every pick against the offer's
+// rules and live prices, and picks that don't qualify stay PAID (they come
+// back as `offer.rejected`). No price or discount is ever accepted here.
+export const freeSelectionsField = z
+  .array(
+    z.object({
+      productId: objectIdField,
+      quantity: z.number().int("Quantity must be a whole number").min(1).max(MAX_COMBINATION_QUANTITY),
+    })
+  )
+  .max(50)
+  .optional();
+
 export const checkoutPreviewSchema = z.object({
   items: cartItemsField,
   couponCode: couponCodeField,
+  freeSelections: freeSelectionsField,
 });
 
 export const createCheckoutSchema = z.object({
@@ -80,6 +95,11 @@ export const createCheckoutSchema = z.object({
   addressId: objectIdField,
   paymentMethod: z.enum(ORDER_PAYMENT_METHODS),
   couponCode: couponCodeField,
+  freeSelections: freeSelectionsField,
+  // The offer discount (rupees) the customer was SHOWN. Never used to price
+  // anything — only compared with the server's fresh result so a change
+  // between preview and pay is surfaced (409) instead of silently charged.
+  expectedOfferDiscount: z.number().min(0).max(10_000_000).optional(),
 });
 
 export type CheckoutPreviewInput = z.infer<typeof checkoutPreviewSchema>;

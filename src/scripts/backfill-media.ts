@@ -33,6 +33,7 @@ const FIELD_BY_ENTITY: Record<MediaEntityType, MediaUsageField> = {
   REVIEW: "image",
   BLOG: "body",
   BLOG_CATEGORY: "image",
+  OFFER: "image",
 };
 
 async function seedUsages(): Promise<void> {

@@ -128,6 +128,21 @@ export const couponValidateLimiter = rateLimit({
   },
 });
 
+// Public cart-offer evaluation (POST /api/offers/evaluate). The cart page calls
+// it on load and on every cart edit, for guests too, so it is per-IP and
+// sized like event ingestion rather than like an attack surface.
+export const offerEvaluateLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitInteractionMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.userId ?? ipKeyGenerator(req.ip ?? "unknown"),
+  message: {
+    success: false,
+    message: "Too many requests. Please try again later.",
+  },
+});
+
 // Same per-user keying. Deliberately NOT applied to the Razorpay webhook
 // route — that one is called by Razorpay's servers and its correctness comes
 // from signature verification, not throttling.

@@ -22,6 +22,8 @@ import checkoutRoutes from "../modules/checkout/checkout.routes";
 import cartPackRoutes from "../modules/checkout/cartPack.routes";
 import couponRoutes from "../modules/coupon/coupon.routes";
 import adminCouponRoutes from "../modules/coupon/adminCoupon.routes";
+import offerRoutes from "../modules/offer/offer.routes";
+import adminOfferRoutes from "../modules/offer/adminOffer.routes";
 import adminInstagramPostRoutes from "../modules/instagramPost/instagramPost.routes";
 import adminYouTubeVideoRoutes from "../modules/youtubeVideo/youtubeVideo.routes";
 import orderRoutes from "../modules/order/order.routes";
@@ -72,6 +74,7 @@ router.use("/admin/settings", adminSettingsRoutes);
 // Same ordering rule as the admin routers above — mounted before the generic
 // "/admin" dashboard router so it wins the match.
 router.use("/admin/coupons", adminCouponRoutes);
+router.use("/admin/offers", adminOfferRoutes);
 // Same ordering rule as the admin routers above — mounted before the generic
 // "/admin" dashboard router so it wins the match.
 router.use("/admin/instagram-posts", adminInstagramPostRoutes);
@@ -121,6 +124,9 @@ router.use("/checkout", checkoutRoutes);
 // applies requireAuth itself. Admin coupon CRUD is a separate router under
 // /admin/coupons.
 router.use("/coupons", couponRoutes);
+// Public read-only list of live BOGO offers (storefront badges). Admin CRUD is
+// under /admin/offers.
+router.use("/offers", offerRoutes);
 router.use("/orders", orderRoutes);
 router.use("/payments", paymentRoutes);
 router.use("/whatsapp", whatsappRoutes);

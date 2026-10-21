@@ -1,6 +1,7 @@
 import { Order } from "../../database/models";
 import { restoreStockForOrder } from "./order.service";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
+import { releaseOfferForOrder } from "../offer/offer.service";
 import { PENDING_ORDER_TTL_MS } from "./orderPaymentWindow";
 
 // Abandoned checkouts: a PENDING_PAYMENT order holds decremented stock from
@@ -31,6 +32,7 @@ export async function cancelStalePendingOrders(): Promise<{ cancelled: number; f
     try {
       await restoreStockForOrder(doc);
       await releaseCouponForOrder(doc);
+      await releaseOfferForOrder(doc);
       doc.status = "CANCELLED";
       doc.paymentStatus = "FAILED";
       doc.cancelReason = "Payment not completed in time";

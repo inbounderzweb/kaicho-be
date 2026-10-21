@@ -10,6 +10,7 @@ import { cancelStalePendingOrders } from "./modules/order/orderCleanup";
 import { publishDueScheduledBlogs } from "./modules/blog/blogScheduler";
 import { ensureUserAuthIndexes } from "./modules/auth/auth.indexes";
 import { ensureCouponIndexes } from "./modules/coupon/coupon.indexes";
+import { ensureOfferIndexes } from "./modules/offer/offer.indexes";
 import { ensureInstagramPostIndexes } from "./modules/instagramPost/instagramPost.indexes";
 import { ensureYouTubeVideoIndexes } from "./modules/youtubeVideo/youtubeVideo.indexes";
 import { ensureInteractionIndexes } from "./modules/interaction/interaction.indexes";
@@ -90,6 +91,9 @@ async function bootstrap() {
     await ensureCouponIndexes().catch((err) => {
       console.error("[coupon] index setup failed:", err);
     });
+    await ensureOfferIndexes().catch((err) => {
+      console.error("[offer] index setup failed:", err);
+    });
     await ensureInstagramPostIndexes().catch((err) => {
       console.error("[instagram-post] index setup failed:", err);
     });
@@ -117,6 +121,9 @@ async function bootstrap() {
     });
     await ensureCouponIndexes().catch((err) => {
       console.error("[coupon] index setup failed:", err);
+    });
+    await ensureOfferIndexes().catch((err) => {
+      console.error("[offer] index setup failed:", err);
     });
     await ensureInstagramPostIndexes().catch((err) => {
       console.error("[instagram-post] index setup failed:", err);

@@ -7,6 +7,7 @@ import {
   OrderItem,
   OrderPricing,
   OrderCoupon,
+  OrderOffer,
   OrderShippingAddress,
   OrderStatus,
   OrderPaymentMethod,
@@ -16,6 +17,7 @@ import {
   Product,
 } from "../../database/models";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
+import { releaseOfferForOrder } from "../offer/offer.service";
 import { notifyOrderStatusChange } from "./orderStatusNotification";
 import { paymentCutoff } from "./orderPaymentWindow";
 import type { Ga4PurchaseParams } from "../../common/analytics/ga4";
@@ -55,6 +57,7 @@ export interface NewOrderPayload {
   pricing: OrderPricing;
   shippingAddress: OrderShippingAddress;
   coupon?: OrderCoupon;
+  offer?: OrderOffer;
   status: OrderStatus;
   paymentMethod: OrderPaymentMethod;
   paymentStatus: OrderPaymentStatus;
@@ -125,6 +128,10 @@ export function toOrderDto(doc: OrderDocument) {
       // time (see checkout.service.ts). Independent of packBreakdown: a
       // plain UNIT purchase of a tracking-enabled combo has this with no
       // pack breakdown at all.
+      // BOGO split of this line: freeQuantity of `quantity` were free, worth
+      // offerDiscount rupees. Absent (0) on orders without an offer.
+      freeQuantity: item.freeQuantity ?? 0,
+      offerDiscount: item.offerDiscount ?? 0,
       inventoryComponents: item.inventoryComponents?.map((c) => ({
         productId: c.productId.toString(),
         productName: c.productName,
@@ -136,6 +143,8 @@ export function toOrderDto(doc: OrderDocument) {
       subtotal: doc.pricing.subtotal,
       // Absent on orders placed before coupons existed — default to 0.
       discountTotal: doc.pricing.discountTotal ?? 0,
+      // Absent on orders placed before offers existed — default to 0.
+      offerDiscountTotal: doc.pricing.offerDiscountTotal ?? 0,
       shippingFee: doc.pricing.shippingFee,
       taxTotal: doc.pricing.taxTotal,
       grandTotal: doc.pricing.grandTotal,
@@ -205,6 +214,47 @@ export function toOrderDto(doc: OrderDocument) {
           discountType: doc.coupon.discountType,
           discountAmount: doc.coupon.discountAmount,
           freeDelivery: doc.coupon.freeDelivery,
+        }
+      : null,
+    // Frozen BOGO snapshot — null for orders without an offer. Everything
+    // needed to reproduce the applied offer: paid/free pairing, original
+    // prices, discount and the terms in force at order time.
+    offer: doc.offer
+      ? {
+          offerId: doc.offer.offerId.toString(),
+          name: doc.offer.name,
+          type: doc.offer.type,
+          buyQuantity: doc.offer.buyQuantity,
+          maxFreeUnitsPerOrder: doc.offer.maxFreeUnitsPerOrder,
+          minPaidUnitPrice: doc.offer.minPaidUnitPrice,
+          allowCouponStacking: doc.offer.allowCouponStacking,
+          freeUnits: doc.offer.freeUnits,
+          discountAmount: doc.offer.discountAmount,
+          freeItems: doc.offer.freeItems.map((f) => ({
+            productId: f.productId.toString(),
+            sku: f.sku,
+            name: f.name,
+            quantity: f.quantity,
+            unitPrice: f.unitPrice,
+            discount: f.discount,
+          })),
+          pairs: doc.offer.pairs.map((p) => ({
+            freeProductId: p.freeProductId.toString(),
+            freeUnitPrice: p.freeUnitPrice,
+            paid: p.paid.map((u) => ({
+              productId: u.productId.toString(),
+              unitPrice: u.unitPrice,
+              quantity: u.quantity,
+            })),
+            count: p.count,
+          })),
+          rules: {
+            applyToAll: doc.offer.rules.applyToAll,
+            eligibleProductIds: doc.offer.rules.eligibleProductIds.map(String),
+            eligibleCategoryIds: doc.offer.rules.eligibleCategoryIds.map(String),
+            excludedProductIds: doc.offer.rules.excludedProductIds.map(String),
+            excludedCategoryIds: doc.offer.rules.excludedCategoryIds.map(String),
+          },
         }
       : null,
     cancelReason: doc.cancelReason,
@@ -337,6 +387,7 @@ export async function cancelOrderForUser(userId: string, orderNumber: string, re
   // Cancelling frees any coupon this order held (full reversal — the order
   // never completed). Refunds do NOT reach here and keep the redemption.
   await releaseCouponForOrder(claimed);
+  await releaseOfferForOrder(claimed);
 
   return toOrderDto(claimed);
 }
@@ -485,6 +536,7 @@ export async function updateOrderStatusAdmin(
   if (nextStatus === "CANCELLED") {
     await restoreStockForOrder(doc);
     await releaseCouponForOrder(doc);
+    await releaseOfferForOrder(doc);
     doc.cancelReason = note ?? "Cancelled by admin";
   }
 

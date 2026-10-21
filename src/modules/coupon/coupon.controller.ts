@@ -7,7 +7,7 @@ import type { ValidateCouponInput } from "./coupon.validation";
 // Returns the backend-computed discount + pricing, or an AppError (handled by
 // the global errorHandler) explaining why not. Never consumes usage.
 export const validateCouponHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { code, items } = req.body as ValidateCouponInput;
-  const data = await validateCouponForCart(req.userId!, code, items);
+  const { code, items, freeSelections } = req.body as ValidateCouponInput;
+  const data = await validateCouponForCart(req.userId!, code, items, freeSelections);
   res.status(200).json({ success: true, data });
 });

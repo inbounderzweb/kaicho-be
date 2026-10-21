@@ -150,6 +150,12 @@ export interface OrderItem {
   selectionType?: OrderItemSelectionType;
   packBreakdown?: OrderPackLine[];
   inventoryComponents?: OrderInventoryComponentLine[];
+  // BOGO: how many of this line's `quantity` units were free, and the rupees
+  // taken off for them (= freeQuantity * unitPrice). `lineTotal` stays the
+  // FULL pre-offer value so history can always show original vs. discount.
+  // Absent on every order placed before offers existed.
+  freeQuantity?: number;
+  offerDiscount?: number;
 }
 
 export interface OrderPricing {
@@ -160,6 +166,10 @@ export interface OrderPricing {
   // on hand-built pricing literals — but the schema always persists it (min 0,
   // default 0), so a stored order document always has it.
   discountTotal?: number;
+  // BOGO offer discount in rupees. Kept separate from the coupon's
+  // `discountTotal` so both stay individually reportable.
+  // grandTotal = subtotal - offerDiscountTotal - discountTotal + shippingFee + taxTotal.
+  offerDiscountTotal?: number;
   shippingFee: number;
   taxTotal: number;
   grandTotal: number;
@@ -175,6 +185,53 @@ export interface OrderCoupon {
   discountType: CouponDiscountType;
   discountAmount: number;
   freeDelivery: boolean;
+}
+
+// Frozen copy of the BOGO offer applied to THIS order — never re-derive
+// history from the live Offer document (it may since be edited/disabled).
+export interface OrderOfferFreeItem {
+  productId: Types.ObjectId;
+  sku: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+}
+export interface OrderOfferPairPaid {
+  productId: Types.ObjectId;
+  unitPrice: number;
+  quantity: number;
+}
+export interface OrderOfferPair {
+  freeProductId: Types.ObjectId;
+  freeUnitPrice: number;
+  paid: OrderOfferPairPaid[];
+  // How many identical (paid[] -> free) pairs this entry stands for.
+  count: number;
+}
+export interface OrderOffer {
+  offerId: Types.ObjectId;
+  name: string;
+  type: string;
+  buyQuantity: number;
+  maxFreeUnitsPerOrder: number;
+  minPaidUnitPrice: number;
+  allowCouponStacking: boolean;
+  freeUnits: number;
+  discountAmount: number;
+  freeItems: OrderOfferFreeItem[];
+  pairs: OrderOfferPair[];
+  // Eligibility rules as they were at order time.
+  rules: {
+    applyToAll: boolean;
+    eligibleProductIds: Types.ObjectId[];
+    eligibleCategoryIds: Types.ObjectId[];
+    excludedProductIds: Types.ObjectId[];
+    excludedCategoryIds: Types.ObjectId[];
+  };
+  // Set once the redemption has been reversed (order cancelled) so a second
+  // cancel path can't release it twice.
+  released?: boolean;
 }
 
 export interface OrderShippingAddress {
@@ -252,6 +309,7 @@ export interface OrderDocument extends Document {
   payment?: OrderPayment;
   shipment?: OrderShipment;
   coupon?: OrderCoupon;
+  offer?: OrderOffer;
   idempotencyKey?: string;
   statusHistory: OrderStatusHistoryEntry[];
   // Acknowledged orders, per admin: timestamps alone miss delayed DB commits.
@@ -299,6 +357,8 @@ const OrderItemSchema = new Schema<OrderItem>(
     // lines are plain UNIT selections and have no pack breakdown at all.
     packBreakdown: { type: [OrderPackLineSchema], default: undefined },
     inventoryComponents: { type: [OrderInventoryComponentLineSchema], default: undefined },
+    freeQuantity: { type: Number, min: 0, default: undefined },
+    offerDiscount: { type: Number, min: 0, default: undefined },
   },
   { _id: false }
 );
@@ -307,6 +367,7 @@ const OrderPricingSchema = new Schema<OrderPricing>(
   {
     subtotal: { type: Number, required: true, min: 0 },
     discountTotal: { type: Number, required: true, min: 0, default: 0 },
+    offerDiscountTotal: { type: Number, required: true, min: 0, default: 0 },
     shippingFee: { type: Number, required: true, min: 0, default: 0 },
     taxTotal: { type: Number, required: true, min: 0, default: 0 },
     grandTotal: { type: Number, required: true, min: 0 },
@@ -324,6 +385,71 @@ const OrderCouponSchema = new Schema<OrderCoupon>(
     discountType: { type: String, enum: COUPON_DISCOUNT_TYPES, required: true },
     discountAmount: { type: Number, required: true, min: 0 },
     freeDelivery: { type: Boolean, required: true, default: false },
+  },
+  { _id: false }
+);
+
+const OrderOfferSchema = new Schema<OrderOffer>(
+  {
+    offerId: { type: Schema.Types.ObjectId, ref: "Offer", required: true },
+    name: { type: String, required: true },
+    type: { type: String, required: true },
+    buyQuantity: { type: Number, required: true, min: 1 },
+    maxFreeUnitsPerOrder: { type: Number, required: true, min: 1 },
+    minPaidUnitPrice: { type: Number, required: true, min: 0, default: 0 },
+    allowCouponStacking: { type: Boolean, required: true, default: false },
+    freeUnits: { type: Number, required: true, min: 1 },
+    discountAmount: { type: Number, required: true, min: 0 },
+    freeItems: {
+      type: [
+        new Schema<OrderOfferFreeItem>(
+          {
+            productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+            sku: { type: String, required: true },
+            name: { type: String, required: true },
+            quantity: { type: Number, required: true, min: 1 },
+            unitPrice: { type: Number, required: true, min: 0 },
+            discount: { type: Number, required: true, min: 0 },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+    pairs: {
+      type: [
+        new Schema<OrderOfferPair>(
+          {
+            freeProductId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+            freeUnitPrice: { type: Number, required: true, min: 0 },
+            paid: {
+              type: [
+                new Schema<OrderOfferPairPaid>(
+                  {
+                    productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+                    unitPrice: { type: Number, required: true, min: 0 },
+                    quantity: { type: Number, required: true, min: 1 },
+                  },
+                  { _id: false }
+                ),
+              ],
+              default: [],
+            },
+            count: { type: Number, required: true, min: 1 },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+    rules: {
+      applyToAll: { type: Boolean, default: false },
+      eligibleProductIds: [{ type: Schema.Types.ObjectId }],
+      eligibleCategoryIds: [{ type: Schema.Types.ObjectId }],
+      excludedProductIds: [{ type: Schema.Types.ObjectId }],
+      excludedCategoryIds: [{ type: Schema.Types.ObjectId }],
+    },
+    released: { type: Boolean, default: undefined },
   },
   { _id: false }
 );
@@ -425,6 +551,7 @@ const OrderSchema = new Schema<OrderDocument>(
     payment: { type: OrderPaymentSchema, default: undefined },
     shipment: { type: OrderShipmentSchema, default: undefined },
     coupon: { type: OrderCouponSchema, default: undefined },
+    offer: { type: OrderOfferSchema, default: undefined },
 
     // Sparse so orders created by any future non-checkout path (admin
     // manual entry, imports) without a key don't collide on `null`.
@@ -451,5 +578,7 @@ OrderSchema.index({ "payment.razorpayPaymentId": 1 });
 OrderSchema.index({ "shipment.trackingNumber": 1 });
 // Admin "orders that used coupon X". Sparse — most orders carry no coupon.
 OrderSchema.index({ "coupon.couponId": 1 }, { sparse: true });
+// Admin "orders that used offer X".
+OrderSchema.index({ "offer.offerId": 1 }, { sparse: true });
 
 export const Order = model<OrderDocument>("Order", OrderSchema);

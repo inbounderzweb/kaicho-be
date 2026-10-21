@@ -33,6 +33,15 @@ import {
   releaseCouponForOrder,
   type EvaluatedCoupon,
 } from "../coupon/coupon.service";
+import {
+  evaluateBestOffer,
+  consumeOfferForOrder,
+  releaseOfferForOrder,
+  toOrderOfferSnapshot,
+  type EvaluatedOffer,
+  type FreeSelection,
+  type OfferCartLine,
+} from "../offer/offer.service";
 import { createRazorpayOrder } from "../../common/payments/razorpay";
 import { getShippingPolicy, getDefaultPackRecommendationStrategy } from "../settings/settings.service";
 import { notifyAdminsNewOrder } from "../notification/notification.service";
@@ -77,9 +86,14 @@ export interface ResolvedDiscount {
 export function computeOrderTotals(
   lineTotals: number[],
   policy: ShippingPolicy = DEFAULT_SHIPPING_POLICY,
-  discount: ResolvedDiscount | null = null
+  discount: ResolvedDiscount | null = null,
+  // BOGO offer discount in rupees, already resolved by the offer engine. Taken
+  // off BEFORE the coupon, so the coupon can only ever discount what is still
+  // payable and the order can't go negative.
+  offerDiscount = 0
 ): {
   subtotal: number;
+  offerDiscountTotal: number;
   discountTotal: number;
   shippingFee: number;
   taxTotal: number;
@@ -93,8 +107,9 @@ export function computeOrderTotals(
 
   // Clamped to [0, subtotal] here as a last guard; coupon.service already
   // computes it within those bounds.
+  const offerMinor = Math.min(Math.max(0, Math.round(offerDiscount * 100)), subtotalMinor);
   const discountMinor = discount
-    ? Math.min(Math.max(0, Math.round(discount.discountAmount * 100)), subtotalMinor)
+    ? Math.min(Math.max(0, Math.round(discount.discountAmount * 100)), subtotalMinor - offerMinor)
     : 0;
 
   // The free-shipping threshold is checked against the PRE-discount subtotal
@@ -107,14 +122,54 @@ export function computeOrderTotals(
   const grandTotal =
     Math.max(
       0,
-      subtotalMinor - discountMinor + Math.round(shippingFee * 100) + Math.round(taxTotal * 100)
+      subtotalMinor - offerMinor - discountMinor + Math.round(shippingFee * 100) + Math.round(taxTotal * 100)
     ) / 100;
 
-  return { subtotal, discountTotal: discountMinor / 100, shippingFee, taxTotal, grandTotal };
+  return { subtotal, offerDiscountTotal: offerMinor / 100, discountTotal: discountMinor / 100, shippingFee, taxTotal, grandTotal };
 }
 
 function lineTotalFor(unitPrice: number, quantity: number): number {
   return (Math.round(unitPrice * 100) * quantity) / 100;
+}
+
+// Feeds the offer engine from lines this file has ALREADY priced from the DB.
+// Only plain UNIT lines of ACTIVE products qualify — a pack line's blended
+// price isn't a unit price a free item can be compared against.
+function toOfferLines(entries: { product: PricedProduct; resolved: ResolvedLine }[]): OfferCartLine[] {
+  return entries
+    .filter(({ product, resolved }) => product.status === "ACTIVE" && resolved.selectionType === "UNIT")
+    .map(({ product, resolved }) => ({
+      productId: product._id.toString(),
+      categoryId: product.categoryId.toString(),
+      unitPrice: resolved.unitPrice,
+      quantity: resolved.quantity,
+    }));
+}
+
+const offerAppliesTo = (offer: EvaluatedOffer | null): offer is EvaluatedOffer =>
+  Boolean(offer && offer.discountAmount > 0);
+
+const COUPON_OFFER_CONFLICT = (offerName: string) =>
+  `This coupon can't be combined with the "${offerName}" offer.`;
+
+function toOfferDto(offer: EvaluatedOffer) {
+  return {
+    id: offer.offerId,
+    name: offer.name,
+    description: offer.description,
+    buyQuantity: offer.buyQuantity,
+    maxFreeUnitsPerOrder: offer.maxFreeUnitsPerOrder,
+    minPaidUnitPrice: offer.minPaidUnitPrice,
+    allowCouponStacking: offer.allowCouponStacking,
+    applied: offer.discountAmount > 0,
+    eligibleProductIds: offer.eligibleProductIds,
+    discountAmount: offer.discountAmount,
+    freeUnits: offer.freeUnits,
+    limitReached: offer.limitReached,
+    unitsToNextFree: offer.unitsToNextFree,
+    freeByProduct: Object.fromEntries(offer.freeByProduct),
+    rejected: offer.rejected,
+  };
 }
 
 export interface RequestedLine {
@@ -311,7 +366,7 @@ export function resolveLine(
 // added this" / "only 2 left" can be shown instead of a surprise 409 at
 // submit time. Unavailable lines are flagged, not thrown on, for exactly
 // that reason.
-export async function previewCheckout(userId: string, input: CheckoutPreviewInput) {
+export async function previewCheckout(userId: string | null, input: CheckoutPreviewInput) {
   const products = await loadProducts(input.items);
   const imageUrls = await getPrimaryImageUrlMap(input.items.map((i) => i.productId));
   const [shippingPolicy, defaultStrategy, categories] = await Promise.all([
@@ -454,6 +509,29 @@ export async function previewCheckout(userId: string, input: CheckoutPreviewInpu
   const eligibleSubtotal =
     payable.reduce((sum, i) => sum + Math.round(i.lineTotal * 100), 0) / 100;
 
+  // BOGO: only lines that are actually payable (active, in stock) can take
+  // part, so an out-of-stock item can never be offered as the free one.
+  const payableIds = new Set(payable.map((i) => i.productId));
+  const evaluatedOffer = await evaluateBestOffer({
+    userId,
+    lines: toOfferLines(
+      resolvedLines
+        .filter((r) => r.product && r.resolved && payableIds.has(r.line.productId))
+        .map((r) => ({ product: r.product!, resolved: r.resolved! }))
+    ),
+    selection: input.freeSelections,
+  });
+  const offerDiscount = offerAppliesTo(evaluatedOffer) ? evaluatedOffer.discountAmount : 0;
+
+  const itemsWithOffer = items.map((i) => {
+    const freeQuantity = evaluatedOffer?.freeByProduct.get(i.productId) ?? 0;
+    return {
+      ...i,
+      freeQuantity,
+      offerDiscount: freeQuantity > 0 ? lineTotalFor(i.unitPrice, freeQuantity) : 0,
+    };
+  });
+
   let coupon:
     | {
         code: string;
@@ -466,12 +544,16 @@ export async function previewCheckout(userId: string, input: CheckoutPreviewInpu
   let couponError: string | null = null;
   let resolvedDiscount: ResolvedDiscount | null = null;
 
-  if (input.couponCode) {
+  if (input.couponCode && userId) {
     try {
+      if (offerAppliesTo(evaluatedOffer) && !evaluatedOffer.allowCouponStacking) {
+        throw new AppError(COUPON_OFFER_CONFLICT(evaluatedOffer.name), 409);
+      }
       const evaluated = await evaluateCouponForSubtotal({
         code: input.couponCode,
         userId,
-        subtotal: eligibleSubtotal,
+        // A stackable coupon only sees what's still payable after the offer.
+        subtotal: Math.round((eligibleSubtotal - offerDiscount) * 100) / 100,
       });
       coupon = {
         code: evaluated.code,
@@ -491,13 +573,19 @@ export async function previewCheckout(userId: string, input: CheckoutPreviewInpu
     }
   }
 
-  const pricing = computeOrderTotals(payable.map((i) => i.lineTotal), shippingPolicy, resolvedDiscount);
+  const pricing = computeOrderTotals(
+    payable.map((i) => i.lineTotal),
+    shippingPolicy,
+    resolvedDiscount,
+    offerDiscount
+  );
 
   return {
-    items,
+    items: itemsWithOffer,
     pricing,
     coupon,
     couponError,
+    offer: evaluatedOffer ? toOfferDto(evaluatedOffer) : null,
     hasIssues: items.some((i) => i.unavailable || i.insufficientStock),
   };
 }
@@ -657,6 +745,45 @@ export async function createCheckout(
       });
     }
 
+    // BOGO: re-evaluated from the freshly-read DB prices at this instant — the
+    // preview the customer saw may be minutes old. Only the customer's free-item
+    // PICKS are taken from the request, and those are re-validated; the amount
+    // is never read from the client.
+    const evaluatedOffer = await evaluateBestOffer({
+      userId,
+      lines: toOfferLines(resolvedLines),
+      selection: input.freeSelections,
+    });
+    const appliedOffer = offerAppliesTo(evaluatedOffer) ? evaluatedOffer : null;
+    const offerDiscount = appliedOffer ? appliedOffer.discountAmount : 0;
+
+    // The offer moved since the customer last saw a total (window closed,
+    // cap reached, price changed…). Refuse and let the UI re-preview — they
+    // must see the new price BEFORE any payment is taken.
+    if (
+      input.expectedOfferDiscount !== undefined &&
+      Math.round(input.expectedOfferDiscount * 100) !== Math.round(offerDiscount * 100)
+    ) {
+      throw new AppError(
+        "The offer on your order has changed. Please review the updated total.",
+        409,
+        true,
+        { offerChanged: true, offerDiscount }
+      );
+    }
+
+    if (appliedOffer) {
+      // Persist free units on the lines: lineTotal stays the FULL price so the
+      // order can always show original vs. discount.
+      for (const item of orderItems) {
+        const freeQuantity = appliedOffer.freeByProduct.get(item.productId.toString()) ?? 0;
+        if (freeQuantity > 0) {
+          item.freeQuantity = freeQuantity;
+          item.offerDiscount = lineTotalFor(item.unitPrice, freeQuantity);
+        }
+      }
+    }
+
     // Re-validate the coupon against the freshly-priced cart, at this instant
     // — the preview the customer saw may be minutes old and the coupon could
     // have expired or hit its limit since (spec §10). Throwing here aborts
@@ -665,12 +792,15 @@ export async function createCheckout(
     // exists.
     let appliedCoupon: EvaluatedCoupon | null = null;
     if (input.couponCode) {
+      if (appliedOffer && !appliedOffer.allowCouponStacking) {
+        throw new AppError(COUPON_OFFER_CONFLICT(appliedOffer.name), 409);
+      }
       const eligibleSubtotal =
         orderItems.reduce((sum, i) => sum + Math.round(i.lineTotal * 100), 0) / 100;
       appliedCoupon = await evaluateCouponForSubtotal({
         code: input.couponCode,
         userId,
-        subtotal: eligibleSubtotal,
+        subtotal: Math.round((eligibleSubtotal - offerDiscount) * 100) / 100,
       });
     }
 
@@ -679,7 +809,8 @@ export async function createCheckout(
       shippingPolicy,
       appliedCoupon
         ? { discountAmount: appliedCoupon.discountAmount, freeDelivery: appliedCoupon.freeDelivery }
-        : null
+        : null,
+      offerDiscount
     );
     const status = input.paymentMethod === "COD" ? "CONFIRMED" : "PENDING_PAYMENT";
 
@@ -689,6 +820,20 @@ export async function createCheckout(
         userId: new mongoose.Types.ObjectId(userId),
         items: orderItems,
         pricing,
+        offer: appliedOffer
+          ? toOrderOfferSnapshot(
+              appliedOffer,
+              orderItems
+                .filter((i) => (i.freeQuantity ?? 0) > 0)
+                .map((i) => ({
+                  productId: i.productId.toString(),
+                  sku: i.sku,
+                  name: i.name,
+                  quantity: i.freeQuantity!,
+                  unitPrice: i.unitPrice,
+                }))
+            )
+          : undefined,
         coupon: appliedCoupon
           ? {
               couponId: new mongoose.Types.ObjectId(appliedCoupon.couponId),
@@ -738,6 +883,24 @@ export async function createCheckout(
       throw err;
     }
 
+    // Redeem the offer now that the order row exists (it needs the orderId).
+    // Race-safe atomic claim of a usage slot; if the slot is gone, undo the
+    // order and let the outer catch release the reserved stock.
+    if (appliedOffer) {
+      try {
+        await consumeOfferForOrder({
+          offerId: appliedOffer.offerId,
+          userId,
+          order,
+          freeUnits: appliedOffer.freeUnits,
+          discountAmount: appliedOffer.discountAmount,
+        });
+      } catch (err) {
+        await order.deleteOne();
+        throw err;
+      }
+    }
+
     // Consume the coupon now that the order row exists (it needs the orderId).
     // Race-safe atomic increment + usage row; see coupon.service. On failure
     // the coupon slot is gone — undo the whole order, then let the outer
@@ -756,6 +919,7 @@ export async function createCheckout(
         });
       } catch (err) {
         await order.deleteOne();
+        await releaseOfferForOrder(order);
         throw err;
       }
     }
@@ -776,6 +940,7 @@ export async function createCheckout(
         // key.
         await order.deleteOne();
         await releaseCouponForOrder(order);
+        await releaseOfferForOrder(order);
         throw err;
       }
     }
@@ -823,7 +988,8 @@ function isDuplicateKeyError(err: unknown, field: string): boolean {
 export async function validateCouponForCart(
   userId: string,
   code: string,
-  items: RequestedLine[]
+  items: RequestedLine[],
+  freeSelections?: FreeSelection[]
 ) {
   const products = await loadProducts(items);
   const [shippingPolicy, defaultStrategy, categories] = await Promise.all([
@@ -834,12 +1000,12 @@ export async function validateCouponForCart(
     ),
   ]);
 
-  const resolvedForEligibility: { resolved: ResolvedLine }[] = [];
+  const resolvedForEligibility: { product: PricedProduct; resolved: ResolvedLine }[] = [];
   for (const line of items) {
     const product = products.get(line.productId);
     if (!product || product.status !== "ACTIVE") continue;
     try {
-      resolvedForEligibility.push({ resolved: resolveLine(line, product, categories.get(product.categoryId.toString()) ?? null, defaultStrategy) });
+      resolvedForEligibility.push({ product, resolved: resolveLine(line, product, categories.get(product.categoryId.toString()) ?? null, defaultStrategy) });
     } catch {
       continue;
     }
@@ -859,17 +1025,37 @@ export async function validateCouponForCart(
   const { shortfalls } = validateInventoryAvailability(combinedRequirement, 1, stockByProductId);
   const shortfallSet = new Set(shortfalls);
 
-  const eligibleLineTotals = resolvedForEligibility
-    .filter(({ resolved }) => !resolved.inventoryRequirement.some((r) => shortfallSet.has(r.productId)))
-    .map(({ resolved }) => resolved.lineTotal);
+  const payableEntries = resolvedForEligibility.filter(
+    ({ resolved }) => !resolved.inventoryRequirement.some((r) => shortfallSet.has(r.productId))
+  );
+  const eligibleLineTotals = payableEntries.map(({ resolved }) => resolved.lineTotal);
 
   const subtotal = eligibleLineTotals.reduce((sum, v) => sum + Math.round(v * 100), 0) / 100;
 
-  const evaluated = await evaluateCouponForSubtotal({ code, userId, subtotal });
-  const pricing = computeOrderTotals(eligibleLineTotals, shippingPolicy, {
-    discountAmount: evaluated.discountAmount,
-    freeDelivery: evaluated.freeDelivery,
+  // Same offer evaluation preview/checkout use, so "valid" here means valid
+  // there: a non-stackable offer blocks the coupon, a stackable one shrinks
+  // the amount the coupon can discount.
+  const evaluatedOffer = await evaluateBestOffer({
+    userId,
+    lines: toOfferLines(payableEntries),
+    selection: freeSelections,
   });
+  const offerDiscount = offerAppliesTo(evaluatedOffer) ? evaluatedOffer.discountAmount : 0;
+  if (offerAppliesTo(evaluatedOffer) && !evaluatedOffer.allowCouponStacking) {
+    throw new AppError(COUPON_OFFER_CONFLICT(evaluatedOffer.name), 409);
+  }
+
+  const evaluated = await evaluateCouponForSubtotal({
+    code,
+    userId,
+    subtotal: Math.round((subtotal - offerDiscount) * 100) / 100,
+  });
+  const pricing = computeOrderTotals(
+    eligibleLineTotals,
+    shippingPolicy,
+    { discountAmount: evaluated.discountAmount, freeDelivery: evaluated.freeDelivery },
+    offerDiscount
+  );
 
   return {
     valid: true as const,
@@ -879,6 +1065,9 @@ export async function validateCouponForCart(
       amount: evaluated.discountAmount,
       freeDelivery: evaluated.freeDelivery,
     },
+    // Kept OUT of `pricing` so that object's long-standing shape is unchanged
+    // for existing clients; `pricing.total` already has the offer taken off.
+    offerDiscount: pricing.offerDiscountTotal,
     pricing: {
       subtotal: pricing.subtotal,
       discount: pricing.discountTotal,

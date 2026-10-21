@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { cartItemsField } from "../checkout/checkout.validation";
+import { cartItemsField, freeSelectionsField } from "../checkout/checkout.validation";
 
 // The client sends only a code and its cart lines — never a discount, a
 // subtotal or a total. The cart lines reuse the exact same untrusted-input
@@ -12,6 +12,7 @@ export const validateCouponSchema = z.object({
     .min(1, "Enter a coupon code")
     .max(40, "Coupon code is too long"),
   items: cartItemsField,
+  freeSelections: freeSelectionsField,
 });
 
 export type ValidateCouponInput = z.infer<typeof validateCouponSchema>;
