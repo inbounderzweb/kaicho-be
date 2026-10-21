@@ -11,6 +11,7 @@ import { publishDueScheduledBlogs } from "./modules/blog/blogScheduler";
 import { ensureUserAuthIndexes } from "./modules/auth/auth.indexes";
 import { ensureCouponIndexes } from "./modules/coupon/coupon.indexes";
 import { ensureOfferIndexes } from "./modules/offer/offer.indexes";
+import { ensurePopupIndexes } from "./modules/popup/popup.indexes";
 import { ensureInstagramPostIndexes } from "./modules/instagramPost/instagramPost.indexes";
 import { ensureYouTubeVideoIndexes } from "./modules/youtubeVideo/youtubeVideo.indexes";
 import { ensureInteractionIndexes } from "./modules/interaction/interaction.indexes";
@@ -100,6 +101,9 @@ async function bootstrap() {
     await ensureYouTubeVideoIndexes().catch((err) => {
       console.error("[youtube-video] index setup failed:", err);
     });
+    await ensurePopupIndexes().catch((err) => {
+      console.error("[popup] index setup failed:", err);
+    });
     await ensureInteractionIndexes().catch((err) => {
       console.error("[interaction] index setup failed:", err);
     });
@@ -130,6 +134,9 @@ async function bootstrap() {
     });
     await ensureYouTubeVideoIndexes().catch((err) => {
       console.error("[youtube-video] index setup failed:", err);
+    });
+    await ensurePopupIndexes().catch((err) => {
+      console.error("[popup] index setup failed:", err);
     });
     await ensureInteractionIndexes().catch((err) => {
       console.error("[interaction] index setup failed:", err);

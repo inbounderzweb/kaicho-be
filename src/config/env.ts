@@ -112,6 +112,7 @@ export const env = {
   // Generous — one visitor legitimately fires several (detect + a few search
   // keystrokes + serviceability) — but caps a script hammering the proxy.
   rateLimitLocationMax: requiredInt("RATE_LIMIT_LOCATION_MAX", 120),
+  rateLimitPopupEventMax: requiredInt("RATE_LIMIT_POPUP_EVENT_MAX", 120),
 
   // --- Location / geocoding -------------------------------------------------
   // The storefront's "detect / choose your delivery area" feature calls

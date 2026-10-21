@@ -26,6 +26,8 @@ import offerRoutes from "../modules/offer/offer.routes";
 import adminOfferRoutes from "../modules/offer/adminOffer.routes";
 import adminInstagramPostRoutes from "../modules/instagramPost/instagramPost.routes";
 import adminYouTubeVideoRoutes from "../modules/youtubeVideo/youtubeVideo.routes";
+import adminPopupRoutes from "../modules/popup/popup.routes";
+import popupPublicRoutes from "../modules/popup/popupPublic.routes";
 import orderRoutes from "../modules/order/order.routes";
 import adminOrderRoutes from "../modules/order/adminOrder.routes";
 import paymentRoutes from "../modules/payment/payment.routes";
@@ -79,6 +81,7 @@ router.use("/admin/offers", adminOfferRoutes);
 // "/admin" dashboard router so it wins the match.
 router.use("/admin/instagram-posts", adminInstagramPostRoutes);
 router.use("/admin/youtube-videos", adminYouTubeVideoRoutes);
+router.use("/admin/popups", adminPopupRoutes);
 router.use("/admin", adminDashboardRoutes);
 
 // Public, unauthenticated customer-facing catalog routes — separate DTOs
@@ -106,6 +109,9 @@ router.use("/brands", publicCache, brandPublicRoutes);
 router.use("/blogs", publicCache, blogPublicRoutes);
 router.use("/inquiries", inquiryPublicRoutes);
 router.use("/settings", publicCache, settingsPublicRoutes);
+// Live storefront popups. Sets its own short Cache-Control (not publicCache,
+// whose stale-while-revalidate would delay pausing/expiring a popup).
+router.use("/popups", popupPublicRoutes);
 // Storefront "detect / choose your delivery area" geocoding proxy. Applies
 // its own per-route cache headers (search is cacheable, reverse/ip are not),
 // so no publicCache wrapper here.

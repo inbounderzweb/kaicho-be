@@ -281,3 +281,17 @@ export const resetPasswordLimiter = rateLimit({
     message: "Too many attempts. Please try again later.",
   },
 });
+
+// Public storefront popup analytics beacons (POST /api/popups/:id/events).
+// Per-IP; a visitor produces a handful of events per page view, so the cap
+// only bites on a script inflating counters.
+export const popupEventLimiter = rateLimit({
+  windowMs,
+  max: env.rateLimitPopupEventMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many requests from this device. Please try again later.",
+  },
+});
