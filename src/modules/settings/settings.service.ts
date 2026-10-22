@@ -5,12 +5,15 @@ import {
   STORE_SETTINGS_DEFAULTS,
   PackRecommendationStrategy,
 } from "../../database/models";
+import { AppError } from "../../common/errors";
 import type { UpdateStoreSettingsInput } from "./settings.validation";
 
 export interface StoreSettingsDto {
   freeShippingThreshold: number;
   flatShippingFee: number;
   defaultPackRecommendationStrategy: PackRecommendationStrategy;
+  restrictDeliveryToStates: boolean;
+  serviceableStates: string[];
   updatedAt: string;
 }
 
@@ -32,6 +35,8 @@ export function toStoreSettingsDto(doc: StoreSettingsDocument): StoreSettingsDto
     freeShippingThreshold: doc.freeShippingThreshold,
     flatShippingFee: doc.flatShippingFee,
     defaultPackRecommendationStrategy: doc.defaultPackRecommendationStrategy,
+    restrictDeliveryToStates: doc.restrictDeliveryToStates === true,
+    serviceableStates: [...(doc.serviceableStates ?? [])],
     updatedAt: doc.updatedAt.toISOString(),
   };
 }
@@ -53,6 +58,18 @@ export async function updateStoreSettings(
   }
   if (patch.defaultPackRecommendationStrategy !== undefined) {
     doc.defaultPackRecommendationStrategy = patch.defaultPackRecommendationStrategy;
+  }
+  if (patch.restrictDeliveryToStates !== undefined) {
+    doc.restrictDeliveryToStates = patch.restrictDeliveryToStates;
+  }
+  if (patch.serviceableStates !== undefined) {
+    doc.serviceableStates = patch.serviceableStates;
+  }
+  // Checked against the document as it WILL look, so turning the restriction
+  // on without any state (or clearing the list while it is on) can't lock
+  // every customer out.
+  if (doc.restrictDeliveryToStates && (doc.serviceableStates?.length ?? 0) === 0) {
+    throw new AppError("Select at least one state, or turn the restriction off", 400);
   }
   if (userId) {
     doc.updatedBy = new mongoose.Types.ObjectId(userId);

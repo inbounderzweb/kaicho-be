@@ -8,6 +8,49 @@ import { PACK_RECOMMENDATION_STRATEGIES, PackRecommendationStrategy } from "./Pa
 // settings doc rather than a model-per-knob so future storefront settings
 // (cashback tiers, COD limits, an announcement bar, …) slot in here without
 // new collections or route surface.
+// Every Indian state and union territory, in the spelling the admin picker
+// stores. Delivery-area settings are validated against exactly this list, so a
+// typo or a made-up region can never end up in the allow-list.
+export const INDIAN_STATES = [
+  "Andaman and Nicobar Islands",
+  "Andhra Pradesh",
+  "Arunachal Pradesh",
+  "Assam",
+  "Bihar",
+  "Chandigarh",
+  "Chhattisgarh",
+  "Dadra and Nagar Haveli and Daman and Diu",
+  "Delhi",
+  "Goa",
+  "Gujarat",
+  "Haryana",
+  "Himachal Pradesh",
+  "Jammu and Kashmir",
+  "Jharkhand",
+  "Karnataka",
+  "Kerala",
+  "Ladakh",
+  "Lakshadweep",
+  "Madhya Pradesh",
+  "Maharashtra",
+  "Manipur",
+  "Meghalaya",
+  "Mizoram",
+  "Nagaland",
+  "Odisha",
+  "Puducherry",
+  "Punjab",
+  "Rajasthan",
+  "Sikkim",
+  "Tamil Nadu",
+  "Telangana",
+  "Tripura",
+  "Uttar Pradesh",
+  "Uttarakhand",
+  "West Bengal",
+] as const;
+export type IndianState = (typeof INDIAN_STATES)[number];
+
 export interface StoreSettingsDocument extends Document {
   key: "store";
   freeShippingThreshold: number;
@@ -17,6 +60,10 @@ export interface StoreSettingsDocument extends Document {
   // used only as the strategy fallback when neither a product's nor its
   // category's own config specifies one.
   defaultPackRecommendationStrategy: PackRecommendationStrategy;
+  // Delivery areas. Off (the default) = every state is served. On = only the
+  // states listed in `serviceableStates`.
+  restrictDeliveryToStates: boolean;
+  serviceableStates: IndianState[];
   updatedBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -54,6 +101,8 @@ const StoreSettingsSchema = new Schema<StoreSettingsDocument>(
       required: true,
       default: STORE_SETTINGS_DEFAULTS.defaultPackRecommendationStrategy,
     },
+    restrictDeliveryToStates: { type: Boolean, default: false },
+    serviceableStates: { type: [{ type: String, enum: INDIAN_STATES }], default: [] },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true }

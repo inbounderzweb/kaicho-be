@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PACK_RECOMMENDATION_STRATEGIES } from "../../database/models";
+import { PACK_RECOMMENDATION_STRATEGIES, INDIAN_STATES } from "../../database/models";
 
 // Rupee amount: non-negative and capped at a sane ceiling so a fat-fingered
 // "4999999" can't silently switch free shipping off forever. Whole-rupee is
@@ -19,9 +19,20 @@ export const updateStoreSettingsSchema = z
     freeShippingThreshold: amount.optional(),
     flatShippingFee: amount.optional(),
     defaultPackRecommendationStrategy: z.enum(PACK_RECOMMENDATION_STRATEGIES).optional(),
+    restrictDeliveryToStates: z.boolean().optional(),
+    // Only names from the fixed state list; duplicates are collapsed.
+    serviceableStates: z
+      .array(z.enum(INDIAN_STATES))
+      .max(INDIAN_STATES.length)
+      .transform((states) => Array.from(new Set(states)))
+      .optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: "At least one field must be provided",
+  })
+  .refine((data) => !(data.restrictDeliveryToStates === true && data.serviceableStates?.length === 0), {
+    message: "Select at least one state, or turn the restriction off",
+    path: ["serviceableStates"],
   });
 
 export type UpdateStoreSettingsInput = z.infer<typeof updateStoreSettingsSchema>;
