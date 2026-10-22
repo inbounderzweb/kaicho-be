@@ -9,6 +9,7 @@ import {
   CLOSE_BUTTON_SIZES,
   CLOSE_BUTTON_STYLES,
   DISMISSAL_POLICIES,
+  COUNTDOWN_POSITIONS,
 } from "../../database/models";
 import { POPUP_LIMITS } from "./popup.limits";
 
@@ -118,6 +119,7 @@ const popupFields = {
     enabled: z.boolean(),
     endsAt: dateField.optional(),
     label: z.string().trim().max(80, "Countdown headline must be at most 80 characters").optional(),
+    position: z.enum(COUNTDOWN_POSITIONS).optional(),
   }),
   targeting: z.strictObject({ includePaths: z.array(pathField).max(L.maxIncludePaths) }),
   schedule: z.strictObject({ startsAt: dateField.optional(), endsAt: dateField.optional() }),

@@ -72,6 +72,7 @@ function configOf(doc: PopupDocument) {
       enabled: Boolean(o.countdown?.enabled),
       endsAt: o.countdown?.endsAt ? new Date(o.countdown.endsAt).toISOString() : null,
       label: o.countdown?.label || undefined,
+      position: o.countdown?.position ?? "BOTTOM_CENTER",
     },
     targeting: o.targeting,
   });
@@ -178,6 +179,7 @@ export async function createPopup(input: CreatePopupInput, adminId?: string): Pr
       enabled: input.countdown?.enabled ?? false,
       endsAt: toDate(input.countdown?.endsAt),
       label: input.countdown?.label || undefined,
+      position: input.countdown?.position ?? "BOTTOM_CENTER",
     },
     createdBy: adminObjectId(adminId),
   });
@@ -218,6 +220,7 @@ export async function updatePopup(id: string, patch: UpdatePopupInput, adminId?:
       enabled: patch.countdown.enabled,
       endsAt: toDate(patch.countdown.endsAt),
       label: patch.countdown.label || undefined,
+      position: patch.countdown.position ?? "BOTTOM_CENTER",
     });
   }
   if (patch.targeting) doc.set("targeting", patch.targeting);

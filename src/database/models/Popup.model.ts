@@ -49,6 +49,9 @@ export type CloseButtonStyle = (typeof CLOSE_BUTTON_STYLES)[number];
 export const DISMISSAL_POLICIES = ["SESSION_SUPPRESS", "WAIT_INTERVAL", "FOLLOW_FREQUENCY"] as const;
 export type DismissalPolicy = (typeof DISMISSAL_POLICIES)[number];
 
+export const COUNTDOWN_POSITIONS = ["TOP_LEFT", "TOP_CENTER", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_CENTER", "BOTTOM_RIGHT"] as const;
+export type CountdownPosition = (typeof COUNTDOWN_POSITIONS)[number];
+
 export interface PopupTimingSettings {
   initialDelaySeconds: number;
   autoCloseEnabled: boolean;
@@ -108,7 +111,7 @@ export interface PopupDocument extends Document {
   };
   // Optional urgency timer (days/hours/min/sec to `endsAt`) shown inside the
   // popup. Independent of the auto-close timer and of `schedule`.
-  countdown: { enabled: boolean; endsAt?: Date; label?: string };
+  countdown: { enabled: boolean; endsAt?: Date; label?: string; position?: CountdownPosition };
   targeting: { includePaths: string[] };
   schedule: { startsAt?: Date; endsAt?: Date };
   analytics: { desktop: PopupDeviceAnalytics; mobile: PopupDeviceAnalytics };
@@ -196,6 +199,7 @@ const PopupSchema = new Schema<PopupDocument>(
       enabled: { type: Boolean, required: true, default: false },
       endsAt: { type: Date },
       label: { type: String, trim: true, maxlength: 80 },
+      position: { type: String, enum: COUNTDOWN_POSITIONS, default: "BOTTOM_CENTER" },
     },
     targeting: {
       includePaths: { type: [String], default: [] },
