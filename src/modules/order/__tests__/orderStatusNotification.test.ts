@@ -9,8 +9,20 @@ vi.mock("../../../common/email/email.service", async (importOriginal) => ({
 
 import { connectDatabase } from "../../../database/connection";
 import { User, Order, type OrderStatus } from "../../../database/models";
-import { updateOrderStatusAdmin } from "../order.service";
-import { saveShipment, updateShipmentStatus } from "../shipment.service";
+import { updateOrderStatusAdmin as updateOrderStatusRaw, resendOrderStatusEmailAdmin } from "../order.service";
+import { saveShipment as saveShipmentRaw, updateShipmentStatus as updateShipmentStatusRaw } from "../shipment.service";
+import { updateOrderStatusSchema, saveShipmentSchema, updateShipmentStatusSchema } from "../order.validation";
+
+// An admin's update only emails when it explicitly asks to, so the tests of the
+// emails themselves go through these "Save & Send Email" shorthands. The
+// consent rules (default = silent, retries, duplicates) use the raw functions
+// in the "email consent" block below.
+const updateOrderStatusAdmin = (id: string, actor: string | undefined, status: OrderStatus, note?: string) =>
+  updateOrderStatusRaw(id, actor, status, note, true);
+const saveShipment = (id: string, actor: string | undefined, input: Parameters<typeof saveShipmentRaw>[2]) =>
+  saveShipmentRaw(id, actor, input, true);
+const updateShipmentStatus = (id: string, actor: string | undefined, status: Parameters<typeof updateShipmentStatusRaw>[2], note?: string) =>
+  updateShipmentStatusRaw(id, actor, status, note, true);
 
 const RUN_ID = Date.now().toString().slice(-6);
 const userIds: mongoose.Types.ObjectId[] = [];
@@ -230,5 +242,123 @@ describe("order status emails", () => {
       // DELIVERED is emailed; RETURN_REQUESTED->DELIVERED is the "return rejected" path.
       expect(["sent", "not_applicable"]).toContain(result.emailNotification.state);
     });
+  });
+});
+
+
+describe("email consent (admin chooses whether the customer is emailed)", () => {
+  beforeEach(() => {
+    sendEmail.mockResolvedValue(undefined);
+  });
+
+  it("Save & Send Email: updates the record and sends exactly one email", async () => {
+    const u = await makeCustomer();
+    const order = await makeOrder(u._id);
+    const result = await updateOrderStatusRaw(order._id.toString(), undefined, "PROCESSING", undefined, true);
+    expect(result.status).toBe("PROCESSING");
+    expect(result.emailNotification.state).toBe("sent");
+    expect((await Order.findById(order._id).lean())!.status).toBe("PROCESSING");
+    await settle();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("Save Without Email: updates the record and sends nothing (status, shipment and shipment-status endpoints)", async () => {
+    const u = await makeCustomer();
+    const a = await makeOrder(u._id);
+    const r1 = await updateOrderStatusRaw(a._id.toString(), undefined, "PROCESSING", undefined, false);
+    expect(r1.status).toBe("PROCESSING");
+    expect(r1.emailNotification).toMatchObject({ state: "not_requested" });
+
+    const b = await makeOrder(u._id, "PROCESSING");
+    const r2 = await saveShipmentRaw(b._id.toString(), undefined, { carrier: "DTDC", trackingNumber: "AWB111111111", status: "SHIPPED" }, false);
+    expect(r2.status).toBe("SHIPPED");
+    expect(r2.emailNotification.state).toBe("not_requested");
+    const r3 = await updateShipmentStatusRaw(b._id.toString(), undefined, "DELIVERED", undefined, false);
+    expect(r3.status).toBe("DELIVERED");
+    expect(r3.emailNotification.state).toBe("not_requested");
+
+    await settle();
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("omitting the preference defaults to no email", async () => {
+    const u = await makeCustomer();
+    const order = await makeOrder(u._id);
+    const result = await updateOrderStatusRaw(order._id.toString(), undefined, "PROCESSING");
+    expect(result.emailNotification.state).toBe("not_requested");
+    await settle();
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a missing, misspelt or wrongly-typed sendEmail parses to false; only a literal true sends", () => {
+    const parse = (v: unknown) => updateOrderStatusSchema.parse({ status: "PROCESSING", ...(v === undefined ? {} : { sendEmail: v }) }).sendEmail;
+    expect(parse(undefined)).toBe(false);
+    for (const bad of ["true", "yes", 1, "1", null, {}, [], 0, "false", false]) expect(parse(bad)).toBe(false);
+    expect(parse(true)).toBe(true);
+
+    expect(saveShipmentSchema.parse({ carrier: "DTDC", sendEmail: "true" }).sendEmail).toBe(false);
+    expect(saveShipmentSchema.parse({ carrier: "DTDC", sendEmail: true }).sendEmail).toBe(true);
+    expect(updateShipmentStatusSchema.parse({ status: "DELIVERED", sendEmail: 1 }).sendEmail).toBe(false);
+    // sendEmail alone isn't a shipment change.
+    expect(saveShipmentSchema.safeParse({ sendEmail: true }).success).toBe(false);
+  });
+
+  it("a failed update (invalid transition / unknown order) sends no email", async () => {
+    const u = await makeCustomer();
+    const order = await makeOrder(u._id, "CONFIRMED");
+    await expect(updateOrderStatusRaw(order._id.toString(), undefined, "DELIVERED", undefined, true)).rejects.toThrow(/Cannot move/);
+    await expect(updateOrderStatusRaw(new mongoose.Types.ObjectId().toString(), undefined, "PROCESSING", undefined, true)).rejects.toThrow(/not found/i);
+    await expect(saveShipmentRaw(order._id.toString(), undefined, { status: "SHIPPED" }, true)).rejects.toThrow(/Courier name/);
+    await settle();
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect((await Order.findById(order._id).lean())!.status).toBe("CONFIRMED");
+  });
+
+  it("an email failure after a successful save is reported as 'failed', the update stands, and a retry sends exactly once", async () => {
+    sendEmail.mockRejectedValueOnce(new Error("smtp down"));
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const u = await makeCustomer();
+    const order = await makeOrder(u._id);
+    const id = order._id.toString();
+
+    const saved = await updateOrderStatusRaw(id, undefined, "PROCESSING", undefined, true);
+    expect(saved.status).toBe("PROCESSING");
+    expect(saved.emailNotification.state).toBe("failed");
+    expect((await Order.findById(order._id).lean())!.status).toBe("PROCESSING");
+
+    const retried = await resendOrderStatusEmailAdmin(id);
+    expect(retried.emailNotification.state).toBe("sent");
+    expect(sendEmail).toHaveBeenCalledTimes(2); // the failed attempt + the retry
+
+    const again = await resendOrderStatusEmailAdmin(id);
+    expect(again.emailNotification.state).toBe("skipped"); // already delivered
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+    quiet.mockRestore();
+  });
+
+  it("double-clicks and concurrent retries never create a duplicate email", async () => {
+    const u = await makeCustomer();
+    const order = await makeOrder(u._id);
+    const id = order._id.toString();
+    // Two identical requests racing (a double click): both pass validation and save.
+    await Promise.allSettled([
+      updateOrderStatusRaw(id, undefined, "PROCESSING", undefined, true),
+      updateOrderStatusRaw(id, undefined, "PROCESSING", undefined, true),
+    ]);
+    await Promise.all([resendOrderStatusEmailAdmin(id), resendOrderStatusEmailAdmin(id), resendOrderStatusEmailAdmin(id)]);
+    await settle();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("a skipped send (unverified address) releases its claim so a later retry can succeed", async () => {
+    const u = await makeCustomer({ emailVerified: false });
+    const order = await makeOrder(u._id);
+    const id = order._id.toString();
+    const first = await updateOrderStatusRaw(id, undefined, "PROCESSING", undefined, true);
+    expect(first.emailNotification.state).toBe("skipped");
+    await User.updateOne({ _id: u._id }, { $set: { emailVerified: true } });
+    const retry = await resendOrderStatusEmailAdmin(id);
+    expect(retry.emailNotification.state).toBe("sent");
+    expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 });

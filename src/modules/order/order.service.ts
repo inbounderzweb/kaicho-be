@@ -18,7 +18,7 @@ import {
 } from "../../database/models";
 import { releaseCouponForOrder } from "../coupon/coupon.service";
 import { releaseOfferForOrder } from "../offer/offer.service";
-import { notifyOrderStatusChange } from "./orderStatusNotification";
+import { notifyOrderStatusIfRequested, resendOrderStatusEmail } from "./orderStatusNotification";
 import { paymentCutoff } from "./orderPaymentWindow";
 import type { Ga4PurchaseParams } from "../../common/analytics/ga4";
 
@@ -514,7 +514,8 @@ export async function updateOrderStatusAdmin(
   orderId: string,
   actorId: string | undefined,
   nextStatus: OrderStatus,
-  note?: string
+  note?: string,
+  sendEmail = false
 ) {
   if (!isValidObjectId(orderId)) {
     throw new AppError("Order not found", 404);
@@ -549,8 +550,24 @@ export async function updateOrderStatusAdmin(
     actor: actorId ? new mongoose.Types.ObjectId(actorId) : undefined,
   });
   await doc.save();
-  const emailNotification = await notifyOrderStatusChange(doc, previousStatus);
+  // The customer is emailed only if the admin explicitly chose to (default: no).
+  const emailNotification = await notifyOrderStatusIfRequested(doc, previousStatus, sendEmail);
 
+  return { ...toOrderDto(doc), emailNotification };
+}
+
+// Admin retry after "saved, but the email failed": emails the customer for the
+// order's current status. Claims the send atomically, so it can't duplicate a
+// mail that did go out, and a second click while one is in flight is a no-op.
+export async function resendOrderStatusEmailAdmin(orderId: string) {
+  if (!isValidObjectId(orderId)) {
+    throw new AppError("Order not found", 404);
+  }
+  const doc = await Order.findById(orderId).exec();
+  if (!doc) {
+    throw new AppError("Order not found", 404);
+  }
+  const emailNotification = await resendOrderStatusEmail(doc);
   return { ...toOrderDto(doc), emailNotification };
 }
 

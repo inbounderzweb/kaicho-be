@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { ORDER_STATUSES, SHIPMENT_STATUSES } from "../../database/models";
 
+// The admin's explicit email choice. Only a literal `true` sends: a missing,
+// misspelt or wrongly-typed value is treated as "don't email" rather than
+// rejected, so a bad client can never cause an email by accident.
+const sendEmailPreference = z
+  .unknown()
+  .optional()
+  .transform((v) => v === true);
+
 export const cancelOrderSchema = z.object({
   reason: z.string().trim().max(500, "Reason is too long").optional(),
 });
@@ -8,6 +16,7 @@ export const cancelOrderSchema = z.object({
 export const updateOrderStatusSchema = z.object({
   status: z.enum(ORDER_STATUSES),
   note: z.string().trim().max(500, "Note is too long").optional(),
+  sendEmail: sendEmailPreference,
 });
 
 // Rupees, not paise — the API surface is rupee-denominated everywhere else
@@ -50,8 +59,10 @@ export const saveShipmentSchema = z
     estimatedDeliveryAt: z.coerce.date().optional(),
     status: z.enum(SHIPMENT_STATUSES).optional(),
     notes: z.string().trim().max(500, "Note is too long").optional(),
+    sendEmail: sendEmailPreference,
   })
-  .refine((d) => Object.keys(d).length > 0, { message: "No shipment fields provided" })
+  // `sendEmail` is always present after the transform and isn't shipment data.
+  .refine((d) => Object.keys(d).some((k) => k !== "sendEmail"), { message: "No shipment fields provided" })
   .refine(
     (d) => !(d.shippedAt && d.estimatedDeliveryAt) || d.estimatedDeliveryAt >= d.shippedAt,
     { message: "Expected delivery date cannot be before the shipping date", path: ["estimatedDeliveryAt"] }
@@ -60,6 +71,7 @@ export const saveShipmentSchema = z
 export const updateShipmentStatusSchema = z.object({
   status: z.enum(SHIPMENT_STATUSES),
   note: z.string().trim().max(500, "Note is too long").optional(),
+  sendEmail: sendEmailPreference,
 });
 
 export type SaveShipmentInput = z.infer<typeof saveShipmentSchema>;

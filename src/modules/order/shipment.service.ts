@@ -8,7 +8,7 @@ import {
   ORDER_STATUS_TRANSITIONS,
 } from "../../database/models";
 import { toOrderDto } from "./order.service";
-import { notifyOrderStatusChange } from "./orderStatusNotification";
+import { notifyOrderStatusIfRequested } from "./orderStatusNotification";
 import type { SaveShipmentInput } from "./order.validation";
 
 // Shipment handling lives in its own file rather than order.service.ts because
@@ -101,7 +101,8 @@ async function loadOrderOr404(orderId: string): Promise<OrderDocument> {
 export async function saveShipment(
   orderId: string,
   actorId: string | undefined,
-  input: SaveShipmentInput
+  input: Omit<SaveShipmentInput, "sendEmail">,
+  sendEmail = false
 ) {
   const doc = await loadOrderOr404(orderId);
   const previousStatus = doc.status;
@@ -148,7 +149,7 @@ export async function saveShipment(
   if (targetOrderStatus) advanceOrderStatusAlongSequence(doc, targetOrderStatus, actorId);
 
   await doc.save();
-  const emailNotification = await notifyOrderStatusChange(doc, previousStatus);
+  const emailNotification = await notifyOrderStatusIfRequested(doc, previousStatus, sendEmail);
   return { ...toOrderDto(doc), emailNotification };
 }
 
@@ -158,7 +159,8 @@ export async function updateShipmentStatus(
   orderId: string,
   actorId: string | undefined,
   status: ShipmentStatus,
-  note?: string
+  note?: string,
+  sendEmail = false
 ) {
   const doc = await loadOrderOr404(orderId);
   const previousStatus = doc.status;
@@ -176,6 +178,6 @@ export async function updateShipmentStatus(
   if (targetOrderStatus) advanceOrderStatusAlongSequence(doc, targetOrderStatus, actorId);
 
   await doc.save();
-  const emailNotification = await notifyOrderStatusChange(doc, previousStatus);
+  const emailNotification = await notifyOrderStatusIfRequested(doc, previousStatus, sendEmail);
   return { ...toOrderDto(doc), emailNotification };
 }

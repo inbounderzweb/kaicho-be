@@ -13,6 +13,7 @@ import {
   refundAdminOrderHandler,
   saveAdminOrderShipmentHandler,
   updateAdminOrderShipmentStatusHandler,
+  resendAdminOrderStatusEmailHandler,
 } from "./adminOrder.controller";
 
 // Admin order management. Unlike the customer routes, orders are addressed by
@@ -25,6 +26,7 @@ router.use(requireAuth, requireRole("admin"));
 router.get("/", listAdminOrdersHandler);
 router.get("/:id", getAdminOrderHandler);
 router.patch("/:id/status", validateBody(updateOrderStatusSchema), updateAdminOrderStatusHandler);
+router.post("/:id/status-email", resendAdminOrderStatusEmailHandler);
 router.post("/:id/refund", validateBody(refundOrderSchema), refundAdminOrderHandler);
 router.put("/:id/shipment", validateBody(saveShipmentSchema), saveAdminOrderShipmentHandler);
 router.patch(

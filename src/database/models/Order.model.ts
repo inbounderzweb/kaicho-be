@@ -297,6 +297,20 @@ export interface OrderShipment {
   notes?: string;
 }
 
+// One entry per customer status email an admin asked for. The entry is claimed
+// atomically BEFORE sending (so a double-click or a retry can't send twice) and
+// stamped `sentAt` only once the mail provider accepted it; a failed send
+// releases the claim so the admin can retry. `transitionIndex` is where the
+// current run of this status starts in `statusHistory`, so two racing requests
+// for the same change share a key, while reaching the status a second time
+// (e.g. a rejected return going back to DELIVERED) is a new email.
+export interface OrderStatusEmailEntry {
+  status: OrderStatus;
+  transitionIndex: number;
+  claimedAt: Date;
+  sentAt?: Date;
+}
+
 export interface OrderDocument extends Document {
   orderNumber: string;
   userId: Types.ObjectId;
@@ -312,6 +326,7 @@ export interface OrderDocument extends Document {
   offer?: OrderOffer;
   idempotencyKey?: string;
   statusHistory: OrderStatusHistoryEntry[];
+  statusEmails?: OrderStatusEmailEntry[];
   // Acknowledged orders, per admin: timestamps alone miss delayed DB commits.
   adminNotificationReadBy?: Types.ObjectId[];
   cancelReason?: string;
@@ -498,6 +513,16 @@ const OrderStatusHistorySchema = new Schema<OrderStatusHistoryEntry>(
   { _id: false }
 );
 
+const OrderStatusEmailSchema = new Schema<OrderStatusEmailEntry>(
+  {
+    status: { type: String, enum: ORDER_STATUSES, required: true },
+    transitionIndex: { type: Number, required: true },
+    claimedAt: { type: Date, required: true },
+    sentAt: { type: Date },
+  },
+  { _id: false }
+);
+
 const OrderShipmentHistorySchema = new Schema<OrderShipmentHistoryEntry>(
   {
     status: { type: String, enum: SHIPMENT_STATUSES, required: true },
@@ -558,6 +583,7 @@ const OrderSchema = new Schema<OrderDocument>(
     idempotencyKey: { type: String, unique: true, sparse: true },
 
     statusHistory: { type: [OrderStatusHistorySchema], default: [] },
+    statusEmails: { type: [OrderStatusEmailSchema], default: undefined },
     adminNotificationReadBy: { type: [Schema.Types.ObjectId], ref: "User", default: undefined },
     cancelReason: { type: String },
   },
