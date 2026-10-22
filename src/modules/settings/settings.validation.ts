@@ -19,6 +19,7 @@ export const updateStoreSettingsSchema = z
     freeShippingThreshold: amount.optional(),
     flatShippingFee: amount.optional(),
     defaultPackRecommendationStrategy: z.enum(PACK_RECOMMENDATION_STRATEGIES).optional(),
+    showMrp: z.boolean().optional(),
     restrictDeliveryToStates: z.boolean().optional(),
     // Only names from the fixed state list; duplicates are collapsed.
     serviceableStates: z

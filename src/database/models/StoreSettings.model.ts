@@ -64,6 +64,9 @@ export interface StoreSettingsDocument extends Document {
   // states listed in `serviceableStates`.
   restrictDeliveryToStates: boolean;
   serviceableStates: IndianState[];
+  // Price display: when false the storefront hides the struck-through MRP and
+  // the discount-percentage labels and shows only the selling price.
+  showMrp: boolean;
   updatedBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -101,6 +104,7 @@ const StoreSettingsSchema = new Schema<StoreSettingsDocument>(
       required: true,
       default: STORE_SETTINGS_DEFAULTS.defaultPackRecommendationStrategy,
     },
+    showMrp: { type: Boolean, default: true },
     restrictDeliveryToStates: { type: Boolean, default: false },
     serviceableStates: { type: [{ type: String, enum: INDIAN_STATES }], default: [] },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User" },

@@ -12,6 +12,7 @@ export interface StoreSettingsDto {
   freeShippingThreshold: number;
   flatShippingFee: number;
   defaultPackRecommendationStrategy: PackRecommendationStrategy;
+  showMrp: boolean;
   restrictDeliveryToStates: boolean;
   serviceableStates: string[];
   updatedAt: string;
@@ -35,6 +36,7 @@ export function toStoreSettingsDto(doc: StoreSettingsDocument): StoreSettingsDto
     freeShippingThreshold: doc.freeShippingThreshold,
     flatShippingFee: doc.flatShippingFee,
     defaultPackRecommendationStrategy: doc.defaultPackRecommendationStrategy,
+    showMrp: doc.showMrp !== false,
     restrictDeliveryToStates: doc.restrictDeliveryToStates === true,
     serviceableStates: [...(doc.serviceableStates ?? [])],
     updatedAt: doc.updatedAt.toISOString(),
@@ -58,6 +60,9 @@ export async function updateStoreSettings(
   }
   if (patch.defaultPackRecommendationStrategy !== undefined) {
     doc.defaultPackRecommendationStrategy = patch.defaultPackRecommendationStrategy;
+  }
+  if (patch.showMrp !== undefined) {
+    doc.showMrp = patch.showMrp;
   }
   if (patch.restrictDeliveryToStates !== undefined) {
     doc.restrictDeliveryToStates = patch.restrictDeliveryToStates;
