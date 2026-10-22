@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
-import { Popup, PopupDocument, PopupStatus, POPUP_STATUSES } from "../../database/models";
+import { Offer, Popup, PopupDocument, PopupStatus, POPUP_STATUSES } from "../../database/models";
+import { getEffectiveOfferStatus } from "../offer/offer.service";
 import { crossFieldIssues } from "./popup.validation";
 import type { CreatePopupInput, UpdatePopupInput, PopupEventInput } from "./popup.validation";
 
@@ -78,6 +79,13 @@ function configOf(doc: PopupDocument) {
   });
 }
 
+// The offers a popup follows: the list, or the single legacy link.
+export function linkedOfferIds(doc: Pick<PopupDocument, "offerIds" | "offerId">): string[] {
+  const ids = (doc.offerIds ?? []).map((id) => id.toString());
+  if (ids.length === 0 && doc.offerId) ids.push(doc.offerId.toString());
+  return ids;
+}
+
 export function toPopupDto(doc: PopupDocument, now: Date = new Date()) {
   const o = doc.toObject({ depopulate: true });
   return {
@@ -86,6 +94,7 @@ export function toPopupDto(doc: PopupDocument, now: Date = new Date()) {
     status: doc.status,
     effectiveState: getEffectivePopupState(doc, now),
     priority: doc.priority,
+    offerIds: linkedOfferIds(doc),
     ...configOf(doc),
     schedule: {
       startsAt: doc.schedule?.startsAt ? doc.schedule.startsAt.toISOString() : null,
@@ -104,7 +113,7 @@ export type PopupDto = ReturnType<typeof toPopupDto>;
 // schedule or author ids. `revision` changes whenever the admin edits the
 // popup, which is how the storefront knows to restart its timers.
 export function toPublicPopupDto(doc: PopupDocument) {
-  return { id: doc._id.toString(), revision: doc.updatedAt.toISOString(), ...configOf(doc) };
+  return { id: doc._id.toString(), revision: doc.updatedAt.toISOString(), linkedToOffer: false, ...configOf(doc) };
 }
 
 export type PublicPopupDto = ReturnType<typeof toPublicPopupDto>;
@@ -169,9 +178,18 @@ function adminObjectId(adminId?: string) {
   return adminId ? new mongoose.Types.ObjectId(adminId) : undefined;
 }
 
+async function assertOffersExist(offerIds: string[] | undefined): Promise<void> {
+  if (!offerIds || offerIds.length === 0) return;
+  const found = await Offer.countDocuments({ _id: { $in: offerIds } });
+  if (found !== offerIds.length) throw new AppError("One of the selected offers no longer exists", 400);
+}
+
 export async function createPopup(input: CreatePopupInput, adminId?: string): Promise<PopupDto> {
+  await assertOffersExist(input.offerIds);
   const doc = await Popup.create({
     ...input,
+    offerIds: input.offerIds ?? [],
+    offerId: null,
     // New popups are always drafts; going live is an explicit status change.
     status: "DRAFT",
     schedule: { startsAt: toDate(input.schedule.startsAt), endsAt: toDate(input.schedule.endsAt) },
@@ -198,6 +216,7 @@ export async function updatePopup(id: string, patch: UpdatePopupInput, adminId?:
     timing: patch.timing ?? configOf(doc).timing,
     display: patch.display ?? configOf(doc).display,
     countdown: patch.countdown ?? configOf(doc).countdown,
+    offerIds: patch.offerIds !== undefined ? patch.offerIds : linkedOfferIds(doc),
     schedule: patch.schedule
       ? { startsAt: patch.schedule.startsAt ?? null, endsAt: patch.schedule.endsAt ?? null }
       : {
@@ -208,6 +227,11 @@ export async function updatePopup(id: string, patch: UpdatePopupInput, adminId?:
   const issues = crossFieldIssues(merged as Parameters<typeof crossFieldIssues>[0]);
   if (issues.length) throw new AppError(issues.map((i) => i.message).join(", "), 400);
 
+  if (patch.offerIds !== undefined) {
+    await assertOffersExist(patch.offerIds);
+    doc.offerIds = patch.offerIds.map((id) => new mongoose.Types.ObjectId(id));
+    doc.offerId = null; // the list replaces the old single link
+  }
   if (patch.name !== undefined) doc.name = patch.name;
   if (patch.priority !== undefined) doc.priority = patch.priority;
   if (patch.content) doc.set("content", patch.content);
@@ -276,9 +300,48 @@ export async function archivePopup(id: string, adminId?: string): Promise<PopupD
 export async function listLivePopups(now: Date = new Date()): Promise<PublicPopupDto[]> {
   const docs = await Popup.find(liveFilter(now))
     .sort({ priority: 1, createdAt: -1 })
-    .limit(5)
+    .limit(25) // headroom: linked popups whose offer isn't live are dropped below
     .exec();
-  return docs.map(toPublicPopupDto);
+
+  // Popups linked to offers follow them: shown while at least one linked offer
+  // is live, hidden when none is (ended, disabled, not started, deleted). The
+  // countdown runs to the soonest end among the LIVE linked offers. One query
+  // covers every linked popup.
+  const allOfferIds = [...new Set(docs.flatMap((d) => linkedOfferIds(d)))];
+  const offers = allOfferIds.length
+    ? await Offer.find({ _id: { $in: allOfferIds } }).select("status startsAt endsAt updatedAt").lean()
+    : [];
+  const offerById = new Map(offers.map((o) => [o._id.toString(), o]));
+
+  const result: PublicPopupDto[] = [];
+  for (const doc of docs) {
+    const ids = linkedOfferIds(doc);
+    if (ids.length === 0) {
+      result.push(toPublicPopupDto(doc));
+      continue;
+    }
+    const linked = ids.map((id) => offerById.get(id)).filter((o): o is NonNullable<typeof o> => Boolean(o));
+    const live = linked.filter((o) => getEffectiveOfferStatus(o, now) === "ACTIVE");
+    if (live.length === 0) continue;
+
+    const dto = toPublicPopupDto(doc);
+    // Soonest end among live offers that have one. Offers with no end date
+    // keep the popup alive but give the timer nothing to count to.
+    const ends = live.filter((o) => o.endsAt).map((o) => new Date(o.endsAt as Date).getTime());
+    const nextEnd = ends.length ? new Date(Math.min(...ends)).toISOString() : null;
+    // The revision moves when the popup OR any linked offer changed, so open
+    // storefronts pick up an edited end time.
+    const revision = new Date(
+      Math.max(doc.updatedAt.getTime(), ...linked.map((o) => new Date(o.updatedAt).getTime()))
+    ).toISOString();
+    result.push({
+      ...dto,
+      revision,
+      linkedToOffer: true,
+      countdown: { ...dto.countdown, enabled: dto.countdown.enabled && nextEnd !== null, endsAt: nextEnd },
+    });
+  }
+  return result.slice(0, 5);
 }
 
 const EVENT_FIELD = {

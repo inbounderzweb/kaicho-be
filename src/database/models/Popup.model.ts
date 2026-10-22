@@ -74,6 +74,12 @@ export interface PopupDocument extends Document {
   name: string;
   status: PopupStatus;
   priority: number;
+  // Optional links to Offers & Promotions offers. While linked, the popup is
+  // shown only while at least one of them is live, and its countdown runs to
+  // the soonest end among the live ones. `offerId` is the earlier single-offer
+  // field, still honoured for popups saved before offerIds existed.
+  offerIds?: Types.ObjectId[];
+  offerId?: Types.ObjectId | null;
   content: {
     heading: string;
     body: string;
@@ -151,6 +157,8 @@ const PopupSchema = new Schema<PopupDocument>(
     name: { type: String, required: true, trim: true, maxlength: 120 },
     status: { type: String, enum: POPUP_STATUSES, required: true, default: "DRAFT" },
     priority: { type: Number, required: true, default: 100, min: 0, max: 1000 },
+    offerIds: { type: [{ type: Schema.Types.ObjectId, ref: "Offer" }], default: [] },
+    offerId: { type: Schema.Types.ObjectId, ref: "Offer", default: null },
     content: {
       heading: { type: String, trim: true, maxlength: 120, default: "" },
       body: { type: String, trim: true, maxlength: 500, default: "" },

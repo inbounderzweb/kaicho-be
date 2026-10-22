@@ -104,9 +104,15 @@ const pathField = z
 
 const dateField = z.union([z.string().datetime({ offset: true }), z.null()]);
 
+const offerIdsField = z
+  .array(z.string().regex(/^[0-9a-fA-F]{24}$/, "Choose a valid offer"))
+  .max(25, "Link at most 25 offers")
+  .transform((ids) => Array.from(new Set(ids)));
+
 const popupFields = {
   name: z.string().trim().min(1, "Name is required").max(120, "Name must be at most 120 characters"),
   priority: intIn("Priority", 0, 1000),
+  offerIds: offerIdsField,
   content: contentSchema,
   design: z.strictObject({ theme: z.enum(POPUP_THEMES), size: z.enum(POPUP_SIZES), imageOnly: z.boolean().optional() }),
   devices: z.strictObject({
@@ -132,6 +138,7 @@ type CrossFieldInput = {
   display?: z.infer<typeof displaySchema>;
   schedule?: { startsAt?: string | null; endsAt?: string | null };
   countdown?: { enabled: boolean; endsAt?: string | null };
+  offerIds?: string[];
 };
 
 // Rules that span fields. Run on whichever of the groups are present, so a
@@ -139,13 +146,14 @@ type CrossFieldInput = {
 // stored `display` in the service (see mergeAndValidate).
 export function crossFieldIssues(input: CrossFieldInput): { path: (string | number)[]; message: string }[] {
   const issues: { path: (string | number)[]; message: string }[] = [];
-  const { content, timing, display, schedule, countdown, design } = input;
+  const { content, timing, display, schedule, countdown, design, offerIds } = input;
 
   if (design?.imageOnly && content && !content.imageUrl && !content.desktopImageUrl && !content.mobileImageUrl) {
     issues.push({ path: ["design", "imageOnly"], message: "Image-only needs an image — add one in Content & Design" });
   }
 
-  if (countdown?.enabled && !countdown.endsAt) {
+  // Linked to offers: the timer runs to the offers' end, so no end time is typed.
+  if (countdown?.enabled && !countdown.endsAt && !(offerIds && offerIds.length > 0)) {
     issues.push({ path: ["countdown", "endsAt"], message: "Set the countdown end time" });
   }
 
@@ -215,7 +223,7 @@ function applyCrossField<T extends CrossFieldInput>(data: T, ctx: z.RefinementCt
 
 // `countdown` is optional on create (defaults to off) so existing clients keep working.
 export const createPopupSchema = z
-  .strictObject({ ...popupFields, countdown: popupFields.countdown.optional() })
+  .strictObject({ ...popupFields, countdown: popupFields.countdown.optional(), offerIds: offerIdsField.optional() })
   .superRefine(applyCrossField);
 
 // PATCH: any subset of the top-level groups. Each group is replaced whole
