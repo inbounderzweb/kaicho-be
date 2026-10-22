@@ -26,6 +26,7 @@ import {
   type ResolvedComponent,
 } from "../product/inventoryTracking.service";
 import { getAddressOrThrow } from "../address/address.service";
+import { assertStateDeliverable } from "../settings/deliveryArea";
 import { createOrderWithUniqueNumber, toGa4PurchaseParams, toOrderDto } from "../order/order.service";
 import {
   evaluateCouponForSubtotal,
@@ -644,6 +645,9 @@ export async function createCheckout(
   }
 
   const address = await getAddressOrThrow(userId, input.addressId);
+  // Outside the admin's delivery areas: refuse before any stock, coupon or
+  // order is touched.
+  await assertStateDeliverable(address.state);
 
   const products = await loadProducts(input.items);
   const imageUrls = await getPrimaryImageUrlMap(input.items.map((i) => i.productId));
