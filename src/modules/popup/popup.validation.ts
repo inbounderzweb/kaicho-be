@@ -88,6 +88,8 @@ const contentSchema = z.strictObject({
   heading: z.string().trim().max(120, "Heading must be at most 120 characters"),
   body: z.string().trim().max(500, "Body must be at most 500 characters"),
   imageUrl: hrefField("Image URL").optional(),
+  desktopImageUrl: hrefField("Desktop banner image").optional(),
+  mobileImageUrl: hrefField("Mobile banner image").optional(),
   imageAlt: z.string().trim().max(200).optional(),
   ctaLabel: z.string().trim().max(40, "Button label must be at most 40 characters").optional(),
   ctaUrl: hrefField("Button link").optional(),
@@ -105,7 +107,7 @@ const popupFields = {
   name: z.string().trim().min(1, "Name is required").max(120, "Name must be at most 120 characters"),
   priority: intIn("Priority", 0, 1000),
   content: contentSchema,
-  design: z.strictObject({ theme: z.enum(POPUP_THEMES), size: z.enum(POPUP_SIZES) }),
+  design: z.strictObject({ theme: z.enum(POPUP_THEMES), size: z.enum(POPUP_SIZES), imageOnly: z.boolean().optional() }),
   devices: z.strictObject({
     desktop: z.strictObject({ enabled: z.boolean(), placement: z.enum(DESKTOP_PLACEMENTS) }),
     mobile: z.strictObject({ enabled: z.boolean(), placement: z.enum(MOBILE_PLACEMENTS) }),
@@ -123,6 +125,7 @@ const popupFields = {
 
 type CrossFieldInput = {
   content?: z.infer<typeof contentSchema>;
+  design?: { imageOnly?: boolean };
   timing?: z.infer<typeof timingSchema>;
   display?: z.infer<typeof displaySchema>;
   schedule?: { startsAt?: string | null; endsAt?: string | null };
@@ -134,7 +137,11 @@ type CrossFieldInput = {
 // stored `display` in the service (see mergeAndValidate).
 export function crossFieldIssues(input: CrossFieldInput): { path: (string | number)[]; message: string }[] {
   const issues: { path: (string | number)[]; message: string }[] = [];
-  const { content, timing, display, schedule, countdown } = input;
+  const { content, timing, display, schedule, countdown, design } = input;
+
+  if (design?.imageOnly && content && !content.imageUrl && !content.desktopImageUrl && !content.mobileImageUrl) {
+    issues.push({ path: ["design", "imageOnly"], message: "Image-only needs an image — add one in Content & Design" });
+  }
 
   if (countdown?.enabled && !countdown.endsAt) {
     issues.push({ path: ["countdown", "endsAt"], message: "Set the countdown end time" });

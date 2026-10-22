@@ -22,7 +22,11 @@ export type PopupTheme = (typeof POPUP_THEMES)[number];
 export const POPUP_SIZES = ["SM", "MD", "LG"] as const;
 export type PopupSize = (typeof POPUP_SIZES)[number];
 
-export const DESKTOP_PLACEMENTS = ["CENTER", "BOTTOM_RIGHT", "BOTTOM_LEFT"] as const;
+export const DESKTOP_PLACEMENTS = [
+  "TOP_LEFT", "TOP_CENTER", "TOP_RIGHT",
+  "CENTER_LEFT", "CENTER", "CENTER_RIGHT",
+  "BOTTOM_LEFT", "BOTTOM_CENTER", "BOTTOM_RIGHT",
+] as const;
 export type DesktopPlacement = (typeof DESKTOP_PLACEMENTS)[number];
 
 export const MOBILE_PLACEMENTS = ["CENTER", "BOTTOM_SHEET"] as const;
@@ -71,11 +75,13 @@ export interface PopupDocument extends Document {
     heading: string;
     body: string;
     imageUrl?: string;
+    desktopImageUrl?: string;
+    mobileImageUrl?: string;
     imageAlt?: string;
     ctaLabel?: string;
     ctaUrl?: string;
   };
-  design: { theme: PopupTheme; size: PopupSize };
+  design: { theme: PopupTheme; size: PopupSize; imageOnly?: boolean };
   devices: {
     desktop: { enabled: boolean; placement: DesktopPlacement };
     mobile: { enabled: boolean; placement: MobilePlacement };
@@ -146,6 +152,8 @@ const PopupSchema = new Schema<PopupDocument>(
       heading: { type: String, trim: true, maxlength: 120, default: "" },
       body: { type: String, trim: true, maxlength: 500, default: "" },
       imageUrl: { type: String, trim: true, maxlength: 2048 },
+      desktopImageUrl: { type: String, trim: true, maxlength: 2048 },
+      mobileImageUrl: { type: String, trim: true, maxlength: 2048 },
       imageAlt: { type: String, trim: true, maxlength: 200 },
       ctaLabel: { type: String, trim: true, maxlength: 40 },
       ctaUrl: { type: String, trim: true, maxlength: 2048 },
@@ -153,6 +161,8 @@ const PopupSchema = new Schema<PopupDocument>(
     design: {
       theme: { type: String, enum: POPUP_THEMES, required: true, default: "LIGHT" },
       size: { type: String, enum: POPUP_SIZES, required: true, default: "MD" },
+      // Show only the image (+ countdown); heading/body/button are hidden.
+      imageOnly: { type: Boolean, default: false },
     },
     devices: {
       desktop: {

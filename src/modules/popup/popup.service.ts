@@ -58,6 +58,8 @@ function configOf(doc: PopupDocument) {
       heading: o.content.heading ?? "",
       body: o.content.body ?? "",
       imageUrl: o.content.imageUrl ?? undefined,
+      desktopImageUrl: o.content.desktopImageUrl ?? undefined,
+      mobileImageUrl: o.content.mobileImageUrl ?? undefined,
       imageAlt: o.content.imageAlt ?? undefined,
       ctaLabel: o.content.ctaLabel ?? undefined,
       ctaUrl: o.content.ctaUrl ?? undefined,
@@ -190,6 +192,7 @@ export async function updatePopup(id: string, patch: UpdatePopupInput, adminId?:
   // the document WILL look like, so `timing` alone can't violate `display`.
   const merged = {
     content: patch.content ?? configOf(doc).content,
+    design: patch.design ?? configOf(doc).design,
     timing: patch.timing ?? configOf(doc).timing,
     display: patch.display ?? configOf(doc).display,
     countdown: patch.countdown ?? configOf(doc).countdown,
@@ -236,7 +239,7 @@ export async function updatePopup(id: string, patch: UpdatePopupInput, adminId?:
 // ---- Status ----
 
 function assertPublishable(doc: PopupDocument): void {
-  if (!doc.content.heading?.trim() && !doc.content.body?.trim() && !doc.content.imageUrl) {
+  if (!doc.content.heading?.trim() && !doc.content.body?.trim() && !doc.content.imageUrl && !doc.content.desktopImageUrl && !doc.content.mobileImageUrl) {
     throw new AppError("Add an image, heading or body text before publishing", 400);
   }
   if (!doc.devices.desktop.enabled && !doc.devices.mobile.enabled) {
