@@ -152,6 +152,38 @@ describe("auto mode", () => {
     expect([freeFor(1), freeFor(2), freeFor(4), freeFor(10)]).toEqual([0, 1, 2, 2]);
   });
 
+  it("four different items, room for two free: the two cheapest are free and the two dearest are charged", () => {
+    const lines = [line("chicken", 190, 1), line("broccoli", 180, 1), line("navadhanya", 140, 1), line("millet", 140, 1)];
+    const r = computeAutoAllocation(lines, rule({ maxFreeUnitsPerOrder: 2 }));
+    expect(r.freeUnits).toBe(2);
+    expect(r.freeByProduct.get("navadhanya")).toBe(1);
+    expect(r.freeByProduct.get("millet")).toBe(1);
+    expect(r.freeByProduct.has("chicken")).toBe(false);
+    expect(r.freeByProduct.has("broccoli")).toBe(false);
+    expect(r.discountMinor).toBe(28000); // pays 190 + 180 = 370 of 650
+  });
+
+  it("a cap of 1 frees only the single cheapest unit; a high cap behaves like 'no limit'", () => {
+    const lines = [line("chicken", 190, 1), line("broccoli", 180, 1), line("navadhanya", 140, 1), line("millet", 140, 1)];
+    const one = computeAutoAllocation(lines, rule({ maxFreeUnitsPerOrder: 1 }));
+    expect(one.freeUnits).toBe(1);
+    expect(one.discountMinor).toBe(14000);
+    expect(one.limitReached).toBe(true);
+    const many = computeAutoAllocation(lines, rule({ maxFreeUnitsPerOrder: 100 }));
+    expect(many.freeUnits).toBe(2);
+    expect(many.limitReached).toBe(false);
+  });
+
+  it("odd carts: 3 items → 1 free (the cheapest), 5 items → 2 free", () => {
+    const three = computeAutoAllocation([line("A", 190, 1), line("B", 180, 1), line("C", 140, 1)], rule({ maxFreeUnitsPerOrder: 100 }));
+    expect(three.freeUnits).toBe(1);
+    expect(three.freeByProduct.get("C")).toBe(1);
+    expect(three.unitsToNextFree).toBe(1);
+    const five = computeAutoAllocation([line("A", 190, 1), line("B", 180, 1), line("C", 140, 3)], rule({ maxFreeUnitsPerOrder: 100 }));
+    expect(five.freeUnits).toBe(2);
+    expect(five.discountMinor).toBe(28000);
+  });
+
   it("no free unit without a qualifying paid unit", () => {
     const r = computeAutoAllocation([line("A", 180, 1)], rule());
     expect(r.freeUnits).toBe(0);

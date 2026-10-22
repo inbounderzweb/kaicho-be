@@ -236,13 +236,18 @@ export function evaluateOfferAgainstLines(
   const rule = toEngineRule(offer);
   const eligibleIds = new Set(engineLines.map((l) => l.productId));
 
+  // "I'll choose" with nothing actually picked is the same as no preference:
+  // the best automatic allocation applies. Treating an empty list as "the
+  // customer wants no free item" would silently charge them for everything.
+  const picks = selection?.filter((s) => s.quantity > 0);
+
   let result: EngineResult;
-  if (selection) {
+  if (picks && picks.length > 0) {
     // Picks for a product this offer doesn't cover are reported, not dropped.
-    const covered = selection.filter((s) => eligibleIds.has(s.productId));
+    const covered = picks.filter((s) => eligibleIds.has(s.productId));
     result = computeSelectionAllocation(engineLines, covered, rule);
-    for (const s of selection) {
-      if (!eligibleIds.has(s.productId) && s.quantity > 0) {
+    for (const s of picks) {
+      if (!eligibleIds.has(s.productId)) {
         result.rejected.push({
           productId: s.productId,
           quantity: s.quantity,

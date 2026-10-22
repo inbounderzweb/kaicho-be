@@ -121,36 +121,40 @@ function finalize(
 }
 
 /**
- * AUTO mode — no customer preference. Sort eligible units by price desc and
- * cut them into consecutive groups of (buyQuantity + 1): the first
- * `buyQuantity` are paid, the last (the group's CHEAPEST) is free. Pairing
- * neighbours maximises savings while guaranteeing free <= every paid unit in
- * its group. Stops at the cap, at the first group that can't be completed,
- * and at the first group whose cheapest paid unit is below the minimum.
+ * AUTO mode — no customer preference. Every (buyQuantity + 1) eligible units
+ * earn ONE free unit, so the free count grows with the cart: 2 units → 1 free,
+ * 4 → 2, 6 → 3 (buy 1 get 1), up to the per-order cap. The FREE units are the
+ * cheapest ones and the customer pays for the highest-priced: with ₹190, ₹180,
+ * ₹140, ₹140 and room for two free units, the two ₹140 items are free and the
+ * ₹190 and ₹180 ones are charged. Every paid unit therefore costs at least as
+ * much as every free unit, so the price rule always holds. If the units that
+ * would have to be paid for fall below the minimum purchased price, fewer free
+ * units are given.
  */
 export function computeAutoAllocation(lines: EngineLine[], rule: OfferEngineRule): EngineResult {
   const result = emptyResult();
-  const units = expand(lines).sort(byPriceDesc);
+  const units = expand(lines).sort(byPriceDesc); // dearest first
   const groupSize = rule.buyQuantity + 1;
 
-  const groups: { free: Unit; paid: Unit[] }[] = [];
-  let cursor = 0;
-  while (cursor + groupSize <= units.length) {
-    if (groups.length >= rule.maxFreeUnitsPerOrder) {
-      result.limitReached = true;
-      break;
-    }
-    const paid = units.slice(cursor, cursor + rule.buyQuantity);
-    // Sorted desc, so paid[last] is the group's cheapest paid unit — and every
-    // later group is cheaper still, so the first failure ends the search.
-    if (paid[paid.length - 1].priceMinor < rule.minPaidUnitPriceMinor) break;
-    groups.push({ free: units[cursor + rule.buyQuantity], paid });
-    cursor += groupSize;
+  const possible = Math.floor(units.length / groupSize);
+  let freeCount = Math.min(possible, rule.maxFreeUnitsPerOrder);
+  const capBinding = possible > rule.maxFreeUnitsPerOrder;
+
+  // The paid partners are the dearest freeCount*buyQuantity units; the cheapest
+  // of them must still meet the minimum purchased price.
+  while (freeCount > 0 && units[freeCount * rule.buyQuantity - 1].priceMinor < rule.minPaidUnitPriceMinor) {
+    freeCount--;
   }
 
-  const remaining = units.length - cursor;
-  if (!result.limitReached && groups.length < rule.maxFreeUnitsPerOrder) {
-    result.unitsToNextFree = remaining === 0 ? groupSize : Math.max(0, groupSize - remaining);
+  const freeUnits = freeCount > 0 ? units.slice(units.length - freeCount) : [];
+  const groups: { free: Unit; paid: Unit[] }[] = freeUnits.map((free, i) => ({
+    free,
+    paid: units.slice(i * rule.buyQuantity, (i + 1) * rule.buyQuantity),
+  }));
+
+  result.limitReached = capBinding && freeCount === rule.maxFreeUnitsPerOrder;
+  if (!result.limitReached && freeCount < rule.maxFreeUnitsPerOrder) {
+    result.unitsToNextFree = Math.max(0, (freeCount + 1) * groupSize - units.length);
   }
   return finalize(result, groups);
 }
