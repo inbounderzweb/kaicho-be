@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
-import { Offer, Popup, PopupDocument, PopupStatus, POPUP_STATUSES } from "../../database/models";
+import { Media, MediaUsage, Offer, Popup, PopupDocument, PopupStatus, POPUP_STATUSES } from "../../database/models";
+import { attachMediaToEntity, detachMedia } from "../media/media.service";
 import { getEffectiveOfferStatus } from "../offer/offer.service";
 import { crossFieldIssues } from "./popup.validation";
 import type { CreatePopupInput, UpdatePopupInput, PopupEventInput } from "./popup.validation";
@@ -178,6 +179,48 @@ function adminObjectId(adminId?: string) {
   return adminId ? new mongoose.Types.ObjectId(adminId) : undefined;
 }
 
+// ---- Banner media ----
+//
+// A popup stores its banners as plain URLs, so nothing told the media library
+// they were in use. They stayed TEMPORARY and the daily cleanup of unused
+// uploads deleted the files, leaving the popup pointing at nothing. Every save
+// now registers the banners as used by this popup (and releases replaced ones).
+
+const MEDIA_FOLDER = /\/images\/\d{4}\/\d{2}\/([0-9a-fA-F-]{36})\//;
+
+async function mediaIdForUrl(url: string | null | undefined): Promise<string | null> {
+  const folder = url ? MEDIA_FOLDER.exec(url)?.[1] : undefined;
+  if (!folder) return null;
+  const media = await Media.findOne({ "variants.optimized.key": { $regex: `/${folder}/` } })
+    .select("_id")
+    .lean();
+  return media ? media._id.toString() : null;
+}
+
+export async function syncPopupMedia(popupId: string, content: PopupDocument["content"] | undefined): Promise<void> {
+  if (!content) return;
+  const slots: [string, string | undefined][] = [
+    ["image", content.imageUrl],
+    ["desktopImage", content.desktopImageUrl],
+    ["mobileImage", content.mobileImageUrl],
+  ];
+  const desired = new Map<string, string>(); // field -> mediaId
+  for (const [field, url] of slots) {
+    const id = await mediaIdForUrl(url);
+    if (id) desired.set(field, id);
+  }
+
+  const existing = await MediaUsage.find({ entityType: "POPUP", entityId: popupId }).lean();
+  for (const usage of existing) {
+    if (desired.get(usage.field) !== usage.mediaId.toString()) {
+      await detachMedia(usage.mediaId.toString(), { entityType: "POPUP", entityId: popupId, field: usage.field });
+    }
+  }
+  for (const [field, mediaId] of desired) {
+    await attachMediaToEntity(mediaId, "POPUP", popupId, { field: field as "image" });
+  }
+}
+
 async function assertOffersExist(offerIds: string[] | undefined): Promise<void> {
   if (!offerIds || offerIds.length === 0) return;
   const found = await Offer.countDocuments({ _id: { $in: offerIds } });
@@ -201,6 +244,7 @@ export async function createPopup(input: CreatePopupInput, adminId?: string): Pr
     },
     createdBy: adminObjectId(adminId),
   });
+  await syncPopupMedia(doc._id.toString(), doc.content);
   return toPopupDto(doc);
 }
 
@@ -260,6 +304,7 @@ export async function updatePopup(id: string, patch: UpdatePopupInput, adminId?:
 
   doc.updatedBy = adminObjectId(adminId) ?? doc.updatedBy;
   await doc.save();
+  if (patch.content) await syncPopupMedia(doc._id.toString(), doc.content);
   return toPopupDto(doc);
 }
 
@@ -287,6 +332,7 @@ export async function setPopupStatus(id: string, status: PopupStatus, adminId?: 
   doc.status = status;
   doc.updatedBy = adminObjectId(adminId) ?? doc.updatedBy;
   await doc.save();
+  if (status === "PUBLISHED") await syncPopupMedia(doc._id.toString(), doc.content);
   return toPopupDto(doc);
 }
 

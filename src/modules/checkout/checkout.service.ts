@@ -27,6 +27,7 @@ import {
 } from "../product/inventoryTracking.service";
 import { getAddressOrThrow } from "../address/address.service";
 import { assertStateDeliverable } from "../settings/deliveryArea";
+import { assertAddressComplete } from "../address/addressCompleteness";
 import { createOrderWithUniqueNumber, toGa4PurchaseParams, toOrderDto } from "../order/order.service";
 import {
   evaluateCouponForSubtotal,
@@ -645,8 +646,10 @@ export async function createCheckout(
   }
 
   const address = await getAddressOrThrow(userId, input.addressId);
-  // Outside the admin's delivery areas: refuse before any stock, coupon or
-  // order is touched.
+  // An address that can't actually be shipped to, or is outside the admin's
+  // delivery areas: refuse before any stock, coupon or order is touched, so
+  // payment can never start for it.
+  assertAddressComplete(address);
   await assertStateDeliverable(address.state);
 
   const products = await loadProducts(input.items);

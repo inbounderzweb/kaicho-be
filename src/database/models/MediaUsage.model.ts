@@ -21,6 +21,8 @@ export const MEDIA_USAGE_FIELDS = [
   "og", // blog / page social-share image
   "body", // inline image inside rich-text body
   "banner",
+  "desktopImage", // popup desktop banner
+  "mobileImage", // popup mobile banner
 ] as const;
 export type MediaUsageField = (typeof MEDIA_USAGE_FIELDS)[number];
 

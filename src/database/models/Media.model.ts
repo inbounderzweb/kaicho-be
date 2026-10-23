@@ -17,6 +17,7 @@ export const MEDIA_ENTITY_TYPES = [
   "BLOG",
   "BLOG_CATEGORY",
   "OFFER",
+  "POPUP",
 ] as const;
 export type MediaEntityType = (typeof MEDIA_ENTITY_TYPES)[number];
 
