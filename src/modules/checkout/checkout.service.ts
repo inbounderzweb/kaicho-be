@@ -608,11 +608,26 @@ export async function previewCheckout(userId: string | null, input: CheckoutPrev
           ? product.inventory.stockQuantity
           : resolved.quantity;
 
+    // The most units of this plain line the shopper may hold (null = stock isn't
+    // tracked, or this is a pack line whose limit doesn't reduce to one number).
+    // Lets the cart stop "+" at real stock instead of waiting for checkout to fail.
+    const stockLimit =
+      resolved.selectionType !== "UNIT"
+        ? null
+        : componentMax !== null
+          ? componentMax === Infinity
+            ? null
+            : componentMax
+          : product.inventory.trackInventory
+            ? product.inventory.stockQuantity
+            : null;
+
     return {
       productId: line.productId,
       name: product.name,
       sku: product.sku,
       imageUrl: imageUrls.get(line.productId) ?? null,
+      stockLimit,
       quantity: resolved.quantity,
       unitPrice: resolved.unitPrice,
       mrp: product.pricing.mrp,
