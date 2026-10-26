@@ -51,6 +51,11 @@ export interface OfferDocument extends Document {
   // before this field existed — those keep their original behaviour (the
   // eligible products are both the ones bought and the ones given free).
   freeProductIds: Types.ObjectId[];
+  // BOGO only, optional: per-product mapping "buying this product may earn
+  // these products free". When non-empty the offer runs in MAPPED mode and a
+  // free item may never cost more than the item bought. A bought product with
+  // no entry falls back to `freeProductIds`. Absent on every older offer.
+  freeProductRules: { buyProductId: Types.ObjectId; freeProductIds: Types.ObjectId[] }[];
   // PERCENTAGE only: 0 < percent <= 100.
   discountPercent?: number;
   // FIXED only: rupees off each eligible unit.
@@ -98,6 +103,18 @@ const OfferSchema = new Schema<OfferDocument>(
     excludedCategoryIds: objectIdArray("Category"),
 
     freeProductIds: objectIdArray("Product"),
+    freeProductRules: {
+      type: [
+        new Schema(
+          {
+            buyProductId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+            freeProductIds: objectIdArray("Product"),
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
     discountPercent: { type: Number, min: 0.01, max: 100 },
     discountAmount: { type: Number, min: 0.01, max: 10_000_000 },
 
@@ -141,7 +158,18 @@ OfferSchema.pre("validate", function (this: OfferDocument) {
   // admin API (adminOffer.service.ts#assertReadyToActivate), not here: offers
   // saved before free products existed legitimately have none and keep working
   // as pooled offers (see offer.service.ts#getOfferMode).
+  if (this.type !== "BOGO" && (this.freeProductRules ?? []).length > 0) {
+    throw new Error("Free product rules only apply to Buy X Get Y Free offers");
+  }
+  const eligibleSet = new Set(this.eligibleProductIds.map(String));
+  const ruleBuyIds = (this.freeProductRules ?? []).map((r) => String(r.buyProductId));
+  if (ruleBuyIds.some((b) => !eligibleSet.has(b)) || new Set(ruleBuyIds).size !== ruleBuyIds.length) {
+    throw new Error("Each free product rule must name a different, eligible product");
+  }
   const excluded = new Set(this.excludedProductIds.map(String));
+  if ((this.freeProductRules ?? []).some((r) => r.freeProductIds.some((id) => excluded.has(String(id))))) {
+    throw new Error("A free product can't also be an excluded product");
+  }
   if (this.freeProductIds.some((id) => excluded.has(String(id)))) {
     throw new Error("A free product can't also be an excluded product");
   }

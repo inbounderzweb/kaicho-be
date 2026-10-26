@@ -65,7 +65,21 @@ function assertValidOfferConfig(doc: OfferDocument): void {
   if (doc.type !== "BOGO" && (doc.freeProductIds?.length ?? 0) > 0) {
     throw new AppError("Free products only apply to Buy X Get Y Free offers", 400);
   }
+  if (doc.type !== "BOGO" && (doc.freeProductRules?.length ?? 0) > 0) {
+    throw new AppError("Free product rules only apply to Buy X Get Y Free offers", 400);
+  }
+  const eligible = new Set(doc.eligibleProductIds.map(String));
+  const ruleBuyIds = (doc.freeProductRules ?? []).map((r) => String(r.buyProductId));
+  if (new Set(ruleBuyIds).size !== ruleBuyIds.length) {
+    throw new AppError("Each purchased product can only have one free product rule", 400);
+  }
+  if (ruleBuyIds.some((b) => !eligible.has(b))) {
+    throw new AppError("A free product rule's purchased product must be one of the eligible products", 400);
+  }
   const excluded = new Set(doc.excludedProductIds.map(String));
+  if ((doc.freeProductRules ?? []).some((r) => r.freeProductIds.some((f) => excluded.has(String(f))))) {
+    throw new AppError("A free product can't also be an excluded product", 400);
+  }
   if ((doc.freeProductIds ?? []).some((id) => excluded.has(String(id)))) {
     throw new AppError("A free product can't also be an excluded product", 400);
   }
@@ -83,7 +97,7 @@ function assertValidOfferConfig(doc: OfferDocument): void {
  */
 function assertReadyToActivate(doc: OfferDocument): void {
   assertValidOfferConfig(doc);
-  if (doc.type === "BOGO" && (doc.freeProductIds?.length ?? 0) === 0) {
+  if (doc.type === "BOGO" && (doc.freeProductIds?.length ?? 0) === 0 && (doc.freeProductRules?.length ?? 0) === 0) {
     throw new AppError("Choose the free product(s) before activating a Buy X Get Y Free offer", 409);
   }
 }
@@ -92,7 +106,10 @@ function assertReadyToActivate(doc: OfferDocument): void {
 function normaliseForType(doc: OfferDocument): void {
   if (doc.type !== "PERCENTAGE") doc.discountPercent = undefined;
   if (doc.type !== "FIXED") doc.discountAmount = undefined;
-  if (doc.type !== "BOGO") doc.freeProductIds = [];
+  if (doc.type !== "BOGO") {
+    doc.freeProductIds = [];
+    doc.freeProductRules = [];
+  }
 }
 
 // ---- Referenced-entity validation ----
@@ -272,7 +289,12 @@ export async function getOfferAdmin(id: string) {
   const doc = await Offer.findById(id).exec();
   if (!doc) throw new AppError("Offer not found", 404);
 
-  const allProductIds = [...doc.eligibleProductIds, ...(doc.freeProductIds ?? []), ...doc.excludedProductIds];
+  const allProductIds = [
+    ...doc.eligibleProductIds,
+    ...(doc.freeProductIds ?? []),
+    ...(doc.freeProductRules ?? []).flatMap((r) => [r.buyProductId, ...r.freeProductIds]),
+    ...doc.excludedProductIds,
+  ];
   const allCategoryIds = [...doc.eligibleCategoryIds, ...doc.excludedCategoryIds];
 
   const [activityDocs, products, categories, images, stats, productImages] = await Promise.all([
@@ -317,6 +339,10 @@ export async function getOfferAdmin(id: string) {
     image: doc.imageMediaId ? images.get(doc.imageMediaId.toString()) ?? null : null,
     eligibleProducts: doc.eligibleProductIds.map(productRef),
     freeProducts: (doc.freeProductIds ?? []).map(productRef),
+    freeProductRules: (doc.freeProductRules ?? []).map((r) => ({
+      buyProduct: productRef(r.buyProductId),
+      freeProducts: r.freeProductIds.map(productRef),
+    })),
     eligibleCategories: doc.eligibleCategoryIds.map(categoryRef),
     excludedProducts: doc.excludedProductIds.map(productRef),
     excludedCategories: doc.excludedCategoryIds.map(categoryRef),
@@ -354,6 +380,7 @@ export async function createOfferAdmin(input: OfferCreateInput, adminId?: string
   await Promise.all([
     assertIdsExist("Product", input.eligibleProductIds, "Eligible products"),
     assertIdsExist("Product", input.freeProductIds, "Free products"),
+    assertIdsExist("Product", [...new Set(input.freeProductRules.flatMap((r) => [r.buyProductId, ...r.freeProductIds]))], "Free product rules"),
     assertIdsExist("Category", input.eligibleCategoryIds, "Eligible categories"),
     assertIdsExist("Product", input.excludedProductIds, "Excluded products"),
     assertIdsExist("Category", input.excludedCategoryIds, "Excluded categories"),
@@ -373,6 +400,10 @@ export async function createOfferAdmin(input: OfferCreateInput, adminId?: string
       excludedProductIds: input.excludedProductIds,
       excludedCategoryIds: input.excludedCategoryIds,
       freeProductIds: input.type === "BOGO" ? input.freeProductIds : [],
+      freeProductRules:
+        input.type === "BOGO"
+          ? input.freeProductRules.map((r) => ({ buyProductId: oid(r.buyProductId), freeProductIds: r.freeProductIds.map(oid) }))
+          : [],
       discountPercent: input.type === "PERCENTAGE" ? input.discountPercent ?? undefined : undefined,
       discountAmount: input.type === "FIXED" ? input.discountAmount ?? undefined : undefined,
       buyQuantity: input.buyQuantity,
@@ -417,6 +448,7 @@ const TRACKED_FIELDS: { label: string; format: (d: OfferDocument) => string }[] 
   { label: "Discount percentage", format: (d) => (d.discountPercent != null ? `${d.discountPercent}%` : "—") },
   { label: "Discount amount", format: (d) => fmtMoney(d.discountAmount) },
   { label: "Free products", format: (d) => fmtCount(d.freeProductIds ?? []) },
+  { label: "Free product rules", format: (d) => fmtCount(d.freeProductRules ?? []) },
   { label: "Description", format: (d) => d.description ?? "—" },
   { label: "Apply to all products", format: (d) => (d.applyToAll ? "Yes" : "No") },
   { label: "Eligible products", format: (d) => fmtCount(d.eligibleProductIds) },
@@ -442,6 +474,9 @@ export async function updateOfferAdmin(id: string, patch: OfferUpdateInput, admi
   await Promise.all([
     patch.eligibleProductIds ? assertIdsExist("Product", patch.eligibleProductIds, "Eligible products") : null,
     patch.freeProductIds ? assertIdsExist("Product", patch.freeProductIds, "Free products") : null,
+    patch.freeProductRules
+      ? assertIdsExist("Product", [...new Set(patch.freeProductRules.flatMap((r) => [r.buyProductId, ...r.freeProductIds]))], "Free product rules")
+      : null,
     patch.eligibleCategoryIds ? assertIdsExist("Category", patch.eligibleCategoryIds, "Eligible categories") : null,
     patch.excludedProductIds ? assertIdsExist("Product", patch.excludedProductIds, "Excluded products") : null,
     patch.excludedCategoryIds ? assertIdsExist("Category", patch.excludedCategoryIds, "Excluded categories") : null,
@@ -452,6 +487,9 @@ export async function updateOfferAdmin(id: string, patch: OfferUpdateInput, admi
   if (patch.name !== undefined) doc.name = patch.name;
   if (patch.type !== undefined) doc.type = patch.type;
   if (patch.freeProductIds !== undefined) doc.freeProductIds = patch.freeProductIds.map(oid);
+  if (patch.freeProductRules !== undefined) {
+    doc.freeProductRules = patch.freeProductRules.map((r) => ({ buyProductId: oid(r.buyProductId), freeProductIds: r.freeProductIds.map(oid) }));
+  }
   if (patch.discountPercent !== undefined) doc.discountPercent = patch.discountPercent ?? undefined;
   if (patch.discountAmount !== undefined) doc.discountAmount = patch.discountAmount ?? undefined;
   if (patch.description !== undefined) doc.description = patch.description || undefined;
@@ -474,10 +512,14 @@ export async function updateOfferAdmin(id: string, patch: OfferUpdateInput, admi
     if (doc.type !== "BOGO" && (patch.freeProductIds?.length ?? 0) > 0) {
       throw new AppError("Free products only apply to Buy X Get Y Free offers", 400);
     }
+    if (doc.type !== "BOGO" && (patch.freeProductRules?.length ?? 0) > 0) {
+      throw new AppError("Free product rules only apply to Buy X Get Y Free offers", 400);
+    }
   }
   // …but leftovers from a previous type are cleared when the type changes.
   if (patch.type !== undefined) {
     if (doc.type !== "BOGO" && patch.freeProductIds === undefined) doc.freeProductIds = [];
+    if (doc.type !== "BOGO" && patch.freeProductRules === undefined) doc.freeProductRules = [];
     if (doc.type !== "PERCENTAGE" && patch.discountPercent === undefined) doc.discountPercent = undefined;
     if (doc.type !== "FIXED" && patch.discountAmount === undefined) doc.discountAmount = undefined;
   }

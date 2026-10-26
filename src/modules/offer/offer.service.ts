@@ -5,12 +5,15 @@ import { getStorageProvider } from "../media/storage";
 import {
   computeAutoAllocation,
   computeDiscountAllocation,
+  computeMappedAutoAllocation,
+  computeMappedSelectionAllocation,
   computeRoleAutoAllocation,
   computeRoleSelectionAllocation,
   computeSelectionAllocation,
   type DiscountRule,
   type EngineLine,
   type EngineResult,
+  type MappedLine,
   type OfferEngineRule,
   type RejectedSelection,
   type RoleLine,
@@ -68,6 +71,10 @@ export interface OfferScope {
   productIds: Set<string>;
   /** BOGO: products that may be given free (empty = legacy pooled offer). */
   freeProductIds: Set<string>;
+  /** MAPPED BOGO: bought product -> the products it may earn free. */
+  freeRules: Map<string, Set<string>>;
+  /** MAPPED BOGO: free products for a bought product with no rule of its own. */
+  freeFallback: Set<string>;
   categoryIds: Set<string>;
   excludedProductIds: Set<string>;
   excludedCategoryIds: Set<string>;
@@ -76,7 +83,7 @@ export interface OfferScope {
 type ScopeSource = Pick<
   OfferDocument,
   "applyToAll" | "eligibleProductIds" | "eligibleCategoryIds" | "excludedProductIds" | "excludedCategoryIds"
-> & { freeProductIds?: OfferDocument["freeProductIds"] };
+> & { freeProductIds?: OfferDocument["freeProductIds"]; freeProductRules?: OfferDocument["freeProductRules"] };
 
 /** categoryId -> itself plus every descendant, from ONE query over the (tiny) category tree. */
 async function loadDescendantsMap(categoryIds: string[]): Promise<Map<string, string[]>> {
@@ -123,7 +130,13 @@ function buildScope(offer: ScopeSource, descendants: Map<string, string[]>): Off
     // stop matching everything and fall back to their explicit lists).
     applyToAll: false,
     productIds: new Set(offer.eligibleProductIds.map(String)),
-    freeProductIds: new Set((offer.freeProductIds ?? []).map(String)),
+    // MAPPED offers can give away anything any rule names, plus the fallback list.
+    freeProductIds: new Set([
+      ...(offer.freeProductIds ?? []).map(String),
+      ...(offer.freeProductRules ?? []).flatMap((r) => r.freeProductIds.map(String)),
+    ]),
+    freeRules: new Map((offer.freeProductRules ?? []).map((r) => [String(r.buyProductId), new Set(r.freeProductIds.map(String))])),
+    freeFallback: new Set((offer.freeProductIds ?? []).map(String)),
     // Offers cover only explicitly selected PRODUCTS. Eligible categories are
     // ignored (legacy data), so a category can never blanket-badge the catalog.
     categoryIds: new Set<string>(),
@@ -151,16 +164,19 @@ export function isProductFreeCandidate(scope: OfferScope, productId: string, cat
  *                         free unit never costs more than the unit it is paired with). Used by offers
  *                         made before free products existed, and when the free list equals the eligible list.
  *  - BOGO_ROLES         : buy from the eligible list, receive a unit from the (different) free list
+ *  - BOGO_MAPPED        : per-product rules (buy A -> free B or C), free never costs more than bought
  */
-export type OfferMode = "PERCENTAGE" | "FIXED" | "BOGO_POOL" | "BOGO_ROLES";
+export type OfferMode = "PERCENTAGE" | "FIXED" | "BOGO_POOL" | "BOGO_ROLES" | "BOGO_MAPPED";
 
 export function getOfferMode(offer: {
   type: OfferDocument["type"];
   eligibleProductIds: unknown[];
   freeProductIds?: unknown[];
+  freeProductRules?: unknown[];
 }): OfferMode {
   if (offer.type === "PERCENTAGE") return "PERCENTAGE";
   if (offer.type === "FIXED") return "FIXED";
+  if ((offer.freeProductRules?.length ?? 0) > 0) return "BOGO_MAPPED";
   const free = new Set((offer.freeProductIds ?? []).map(String));
   if (free.size === 0) return "BOGO_POOL";
   const eligible = new Set(offer.eligibleProductIds.map(String));
@@ -242,6 +258,12 @@ export interface EvaluatedOffer {
   rejected: RejectedSelection[];
   limitReached: boolean;
   unitsToNextFree: number;
+  /**
+   * BOGO (pooled and mapped): the cart's paid units that can still earn a free
+   * item — price, quantity and which products each may earn. The checkout layer
+   * turns these into price-limited suggestions. Units already given free are excluded.
+   */
+  payerGroups: { productId: string; unitPriceMinor: number; quantity: number; allowedFree: string[] }[];
   /** Rule snapshot source, used when persisting Order.offer. */
   rules: {
     applyToAll: boolean;
@@ -293,6 +315,7 @@ export function evaluateOfferAgainstLines(
   let result: EngineResult;
   let discountMinorByProduct = new Map<string, number>();
   let freeCandidateIds: string[] = [];
+  let mappedPayers: EvaluatedOffer["payerGroups"] = [];
 
   // "I'll choose" with nothing actually picked is the same as no preference:
   // the best automatic allocation applies. Treating an empty list as "the
@@ -316,6 +339,23 @@ export function evaluateOfferAgainstLines(
       unitsToNextFree: 0,
       needsFreeProduct: false,
     };
+  } else if (mode === "BOGO_MAPPED") {
+    const mappedLines: MappedLine[] = lines
+      .filter((l) => l.quantity > 0)
+      .map((l) => ({
+        productId: l.productId,
+        unitPriceMinor: Math.round(l.unitPrice * 100),
+        quantity: l.quantity,
+        canPay: isProductEligible(scope, l.productId, l.categoryId),
+        canFree: isProductFreeCandidate(scope, l.productId, l.categoryId),
+        allowedFree: scope.freeRules.get(l.productId) ?? scope.freeFallback,
+      }))
+      .filter((l) => l.canPay || l.canFree);
+    freeCandidateIds = mappedLines.filter((l) => l.canFree).map((l) => l.productId);
+    mappedPayers = mappedLines
+      .filter((l) => l.canPay && l.unitPriceMinor >= rule.minPaidUnitPriceMinor)
+      .map((l) => ({ productId: l.productId, unitPriceMinor: l.unitPriceMinor, quantity: l.quantity, allowedFree: [...l.allowedFree] }));
+    result = picks && picks.length > 0 ? computeMappedSelectionAllocation(mappedLines, picks, rule) : computeMappedAutoAllocation(mappedLines, rule);
   } else if (mode === "BOGO_ROLES") {
     const roleLines: RoleLine[] = lines
       .filter((l) => l.quantity > 0)
@@ -349,6 +389,11 @@ export function evaluateOfferAgainstLines(
   } else {
     // Legacy pooled BOGO.
     freeCandidateIds = [...eligibleIds];
+    // In a pooled offer every eligible product may be bought and every eligible
+    // product given free, subject only to the price rule.
+    mappedPayers = eligibleLines
+      .filter((l) => l.unitPriceMinor >= rule.minPaidUnitPriceMinor)
+      .map((l) => ({ productId: l.productId, unitPriceMinor: l.unitPriceMinor, quantity: l.quantity, allowedFree: [...scope.productIds] }));
     if (picks && picks.length > 0) {
       // Picks for a product this offer doesn't cover are reported, not dropped.
       const covered = picks.filter((s) => eligibleIds.has(s.productId));
@@ -368,14 +413,19 @@ export function evaluateOfferAgainstLines(
     }
   }
 
-  if (mode === "BOGO_POOL" || mode === "BOGO_ROLES") {
+  if (mode === "BOGO_POOL" || mode === "BOGO_ROLES" || mode === "BOGO_MAPPED") {
     // A free unit takes its own unit price off; the line it belongs to keeps its full total.
     for (const [productId, qty] of result.freeByProduct) {
       discountMinorByProduct.set(productId, (priceMinor.get(productId) ?? 0) * qty);
     }
   }
 
-  const coveredIds = mode === "BOGO_ROLES" ? new Set([...eligibleIds, ...freeCandidateIds]) : eligibleIds;
+  // A unit already given free is not a paid partner for another free item.
+  mappedPayers = mappedPayers
+    .map((g) => ({ ...g, quantity: g.quantity - (result.freeByProduct.get(g.productId) ?? 0) }))
+    .filter((g) => g.quantity > 0);
+
+  const coveredIds = mode === "BOGO_ROLES" || mode === "BOGO_MAPPED" ? new Set([...eligibleIds, ...freeCandidateIds]) : eligibleIds;
 
   return {
     offerId: offer._id.toString(),
@@ -390,7 +440,7 @@ export function evaluateOfferAgainstLines(
     minPaidUnitPrice: offer.minPaidUnitPrice ?? 0,
     allowCouponStacking: offer.allowCouponStacking ?? false,
     eligibleProductIds: [...coveredIds],
-    freeProductIds: (offer.freeProductIds ?? []).map(String),
+    freeProductIds: mode === "BOGO_MAPPED" ? [...scope.freeProductIds] : (offer.freeProductIds ?? []).map(String),
     freeCandidateProductIds: freeCandidateIds,
     needsFreeProduct: result.needsFreeProduct,
     discountByProduct: new Map([...discountMinorByProduct].map(([id, minor]) => [id, minor / 100])),
@@ -401,6 +451,7 @@ export function evaluateOfferAgainstLines(
     rejected: result.rejected,
     limitReached: result.limitReached,
     unitsToNextFree: result.unitsToNextFree,
+    payerGroups: mappedPayers,
     rules: {
       applyToAll: offer.applyToAll,
       eligibleProductIds: offer.eligibleProductIds.map(String),

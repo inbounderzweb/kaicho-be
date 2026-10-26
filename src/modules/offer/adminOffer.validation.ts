@@ -52,6 +52,10 @@ const baseOfferShape = {
 
   // Buy X Get Y Free: the products given free.
   freeProductIds: idList("Free products"),
+  // Optional per-product mapping: buying `buyProductId` may earn any of `freeProductIds` free.
+  freeProductRules: z
+    .array(z.object({ buyProductId: objectIdField, freeProductIds: idList("Free products").refine((l) => l.length > 0, "Choose at least one free product") }))
+    .max(500, "Free product rules: too many entries"),
   discountPercent: percentField.nullable().optional(),
   discountAmount: amountField.nullable().optional(),
 
@@ -77,6 +81,7 @@ type RefineShape = {
   eligibleCategoryIds?: string[];
   excludedProductIds?: string[];
   freeProductIds?: string[];
+  freeProductRules?: { buyProductId: string; freeProductIds: string[] }[];
   discountPercent?: number | null;
   discountAmount?: number | null;
   startsAt?: Date | null;
@@ -115,6 +120,21 @@ function refineOffer(data: RefineShape, ctx: z.RefinementCtx, requireScope: bool
       message: "Free products only apply to Buy X Get Y Free offers",
     });
   }
+  if (data.type !== undefined && data.type !== "BOGO" && (data.freeProductRules?.length ?? 0) > 0) {
+    ctx.addIssue({ code: "custom", path: ["freeProductRules"], message: "Free product rules only apply to Buy X Get Y Free offers" });
+  }
+  if (data.freeProductRules) {
+    const buyIds = data.freeProductRules.map((r) => r.buyProductId);
+    if (new Set(buyIds).size !== buyIds.length) {
+      ctx.addIssue({ code: "custom", path: ["freeProductRules"], message: "Each purchased product can only have one rule" });
+    }
+    if (data.eligibleProductIds && buyIds.some((b) => !data.eligibleProductIds!.includes(b))) {
+      ctx.addIssue({ code: "custom", path: ["freeProductRules"], message: "A rule's purchased product must be one of the eligible products" });
+    }
+    if (data.excludedProductIds && data.freeProductRules.some((r) => r.freeProductIds.some((f) => data.excludedProductIds!.includes(f)))) {
+      ctx.addIssue({ code: "custom", path: ["freeProductRules"], message: "A free product can't also be an excluded product" });
+    }
+  }
   if (data.type === "BOGO" && (data.discountPercent != null || data.discountAmount != null)) {
     ctx.addIssue({
       code: "custom",
@@ -133,7 +153,8 @@ function refineOffer(data: RefineShape, ctx: z.RefinementCtx, requireScope: bool
     requireScope &&
     data.type === "BOGO" &&
     (data.status === "ACTIVE" || data.status === "SCHEDULED") &&
-    (data.freeProductIds?.length ?? 0) === 0
+    (data.freeProductIds?.length ?? 0) === 0 &&
+    (data.freeProductRules?.length ?? 0) === 0
   ) {
     ctx.addIssue({
       code: "custom",
@@ -173,6 +194,7 @@ export const offerCreateSchema = z
     excludedProductIds: baseOfferShape.excludedProductIds.default([]),
     excludedCategoryIds: baseOfferShape.excludedCategoryIds.default([]),
     freeProductIds: baseOfferShape.freeProductIds.default([]),
+    freeProductRules: baseOfferShape.freeProductRules.default([]),
     buyQuantity: baseOfferShape.buyQuantity.default(1),
     maxFreeUnitsPerOrder: baseOfferShape.maxFreeUnitsPerOrder.default(1),
     minPaidUnitPrice: baseOfferShape.minPaidUnitPrice.default(0),

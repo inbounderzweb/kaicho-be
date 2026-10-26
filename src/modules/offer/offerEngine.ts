@@ -481,6 +481,191 @@ export function computeRoleSelectionAllocation(
 }
 
 // ---------------------------------------------------------------------------
+// MAPPED mode — per-product rules: each bought product names the products it
+// may earn free, AND a free unit never costs more than the paid unit it is
+// paired with (every paid partner, when buyQuantity > 1). A unit is either
+// paid or free, never both, so pairing is a bipartite matching of free units
+// (b slots each) onto distinct paid units. Free units are taken dearest first
+// whenever a pairing still exists, which maximises the customer's saving.
+// ---------------------------------------------------------------------------
+
+export interface MappedLine extends EngineLine {
+  /** Product is on the offer's "must buy" list. */
+  canPay: boolean;
+  /** Product is something the offer can give free. */
+  canFree: boolean;
+  /** Products this bought product may earn free. */
+  allowedFree: ReadonlySet<string>;
+}
+
+interface MappedUnit extends Unit {
+  canPay: boolean;
+  canFree: boolean;
+  allowedFree: ReadonlySet<string>;
+}
+
+/** Can `payer` be the paid partner of a free unit `free`? Price rule included. */
+export function mappedCompatible(
+  payer: { priceMinor: number; allowedFree: ReadonlySet<string> },
+  free: { productId: string; priceMinor: number }
+): boolean {
+  return free.priceMinor <= payer.priceMinor && payer.allowedFree.has(free.productId);
+}
+
+// Kuhn's augmenting-path matching: slots[i] -> payers (indices), all slots must be placed.
+function matchSlots(slotCandidates: number[][], payerCount: number): number[] | null {
+  const owner = new Array<number>(payerCount).fill(-1);
+  const place = (slot: number, seen: boolean[]): boolean => {
+    for (const p of slotCandidates[slot]) {
+      if (seen[p]) continue;
+      seen[p] = true;
+      if (owner[p] === -1 || place(owner[p], seen)) {
+        owner[p] = slot;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let slot = 0; slot < slotCandidates.length; slot++) {
+    if (!place(slot, new Array<boolean>(payerCount).fill(false))) return null;
+  }
+  return owner;
+}
+
+function allocateMapped(
+  lines: MappedLine[],
+  rule: OfferEngineRule,
+  /** productId -> how many of its units should be tried as FREE. */
+  wantedCounts: Map<string, number>
+): { result: EngineResult; failed: MappedUnit[]; capped: MappedUnit[] } {
+  const result = emptyResult();
+  const units: MappedUnit[] = lines.flatMap((l) =>
+    Array.from({ length: Math.max(0, l.quantity) }, () => ({
+      productId: l.productId,
+      priceMinor: l.unitPriceMinor,
+      canPay: l.canPay,
+      canFree: l.canFree,
+      allowedFree: l.allowedFree,
+    }))
+  );
+  const eligiblePayer = (u: MappedUnit) => u.canPay && u.priceMinor >= rule.minPaidUnitPriceMinor;
+  // Same unit objects as `units`, so "free" and "payer" can never be the same unit.
+  const taken = new Map<string, number>();
+  const wanted = units.filter((u) => {
+    const n = taken.get(u.productId) ?? 0;
+    if (n >= (wantedCounts.get(u.productId) ?? 0)) return false;
+    taken.set(u.productId, n + 1);
+    return true;
+  });
+
+  // Dearest first; on a tie prefer units that can ONLY be free so a shared unit stays a payer.
+  const order = [...wanted].sort(
+    (a, b) =>
+      b.priceMinor - a.priceMinor ||
+      Number(a.canPay) - Number(b.canPay) ||
+      (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0)
+  );
+
+  const pair = (free: MappedUnit[]) => {
+    const freeSet = new Set(free);
+    const payers = units.filter((u) => eligiblePayer(u) && !freeSet.has(u));
+    const slots = free.flatMap((f) => Array.from({ length: rule.buyQuantity }, () => f));
+    const candidates = slots.map((f) =>
+      payers.flatMap((p, i) => (mappedCompatible(p, f) ? [i] : []))
+    );
+    const owner = matchSlots(candidates, payers.length);
+    return owner ? { owner, payers, slots } : null;
+  };
+
+  const chosen: MappedUnit[] = [];
+  const failed: MappedUnit[] = [];
+  const capped: MappedUnit[] = [];
+  for (const f of order) {
+    if (chosen.length >= rule.maxFreeUnitsPerOrder) {
+      capped.push(f);
+      continue;
+    }
+    if (pair([...chosen, f])) chosen.push(f);
+    else failed.push(f);
+  }
+
+  const final = chosen.length ? pair(chosen) : null;
+  const groups: { free: Unit; paid: Unit[] }[] = chosen.map((free) => ({ free, paid: [] }));
+  if (final) {
+    final.owner.forEach((slot, payerIdx) => {
+      if (slot >= 0) groups[chosen.indexOf(final.slots[slot])].paid.push(final.payers[payerIdx]);
+    });
+  }
+  result.limitReached = capped.length > 0;
+  const freeSet = new Set(chosen);
+  const spare = units.filter((u) => eligiblePayer(u) && !freeSet.has(u)).length;
+  if (!result.limitReached && chosen.length < rule.maxFreeUnitsPerOrder) {
+    result.unitsToNextFree = Math.max(0, (chosen.length + 1) * rule.buyQuantity - (spare + chosen.length * rule.buyQuantity));
+  }
+  return { result: finalize(result, groups), failed, capped };
+}
+
+/** AUTO: as many free units as pairings allow, dearest (best saving) first. */
+export function computeMappedAutoAllocation(lines: MappedLine[], rule: OfferEngineRule): EngineResult {
+  const { result } = allocateMapped(
+    lines,
+    rule,
+    new Map(lines.filter((l) => l.canFree).map((l) => [l.productId, l.quantity]))
+  );
+  if (result.freeUnits === 0) {
+    result.needsFreeProduct = !lines.some((l) => l.canFree && l.quantity > 0) && lines.some((l) => l.canPay && l.quantity > 0);
+  }
+  return result;
+}
+
+/** SELECTION: the customer's picks; any that can't be honoured stay PAID and are reported. */
+export function computeMappedSelectionAllocation(
+  lines: MappedLine[],
+  selection: { productId: string; quantity: number }[],
+  rule: OfferEngineRule
+): EngineResult {
+  const byProduct = new Map(lines.map((l) => [l.productId, l]));
+  const wantedQty = new Map<string, number>();
+  for (const s of selection) if (s.quantity > 0) wantedQty.set(s.productId, (wantedQty.get(s.productId) ?? 0) + s.quantity);
+
+  const rejected: RejectedSelection[] = [];
+  const wanted = new Map<string, number>();
+  for (const [productId, qty] of wantedQty) {
+    const line = byProduct.get(productId);
+    if (!line || !line.canFree) {
+      rejected.push({ productId, quantity: qty, reason: "NOT_ELIGIBLE", message: "This item isn't one of the free items for this offer." });
+      continue;
+    }
+    const usable = Math.min(qty, line.quantity);
+    if (qty > usable) {
+      rejected.push({ productId, quantity: qty - usable, reason: "NOT_IN_CART", message: "You selected more free units than you have in your cart." });
+    }
+    wanted.set(productId, usable);
+  }
+
+  const { result, failed, capped } = allocateMapped(lines, rule, wanted);
+  const agg = new Map<string, RejectedSelection>();
+  const add = (u: Unit, reason: RejectionReason, message: string) => {
+    const k = `${u.productId}|${reason}`;
+    const cur = agg.get(k);
+    if (cur) cur.quantity += 1;
+    else agg.set(k, { productId: u.productId, quantity: 1, reason, message });
+  };
+  const payerPool = lines.filter((l) => l.canPay && l.unitPriceMinor >= rule.minPaidUnitPriceMinor).reduce((n, l) => n + l.quantity, 0) - [...wanted.values()].reduce((n, q) => n + q, 0);
+  for (const u of capped) add(u, "LIMIT_REACHED", `The offer allows at most ${rule.maxFreeUnitsPerOrder} free item(s) per order.`);
+  for (const u of failed) {
+    const needed = rule.buyQuantity;
+    if (payerPool < needed) {
+      add(u, "NOT_ENOUGH_PAID_ITEMS", `Add ${needed - payerPool} more qualifying item(s) to get this one free.`);
+    } else {
+      add(u, "PRICE_TOO_HIGH", "A free item can't cost more than the item you buy, and it must be one of the free items allowed for that product.");
+    }
+  }
+  result.rejected.push(...rejected, ...agg.values());
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // PERCENTAGE / FIXED — a discount on every unit of the eligible products.
 // Per-UNIT paise are computed first and multiplied by quantity, so the amount
 // a product card shows for one unit is exactly what the cart takes off per unit.

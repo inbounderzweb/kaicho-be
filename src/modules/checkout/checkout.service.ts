@@ -41,6 +41,7 @@ import {
   releaseOfferForOrder,
   toOrderOfferSnapshot,
   type EvaluatedOffer,
+  buildScopeForOffer,
   type FreeSelection,
   type OfferCartLine,
 } from "../offer/offer.service";
@@ -181,6 +182,117 @@ function toOfferDto(offer: EvaluatedOffer) {
     freeByProduct: Object.fromEntries(offer.freeByProduct),
     rejected: offer.rejected,
   };
+}
+
+export interface FreeProductOption {
+  productId: string;
+  slug: string;
+  name: string;
+  imageUrl: string | null;
+  /** Selling price per unit — shown struck through next to FREE. */
+  unitPrice: number;
+  mrp: number;
+  /** e.g. "250 g" / "250 g x 4"; null when the product has no pack data. */
+  packSize: string | null;
+  /** Free units of this product the cart's paid items unlock right now (0 = still locked). */
+  claimableUnits: number;
+  /** More paid units needed before this product can be free (0 once unlocked). */
+  unitsToUnlock: number;
+  /** Most units that could be held in the cart (null = stock isn't tracked). */
+  availableQuantity: number | null;
+  /** Units of it already in the cart. */
+  inCartQuantity: number;
+  /** 1 = best suggestion (biggest saving). */
+  rank: number;
+}
+
+const packSizeLabel = (grams?: number | null, packs?: number | null): string | null => {
+  if (!grams) return null;
+  const size = grams >= 1000 ? `${+(grams / 1000).toFixed(2)} kg` : `${+grams.toFixed(2)} g`;
+  return packs && packs > 1 ? `${size} x ${packs}` : size;
+};
+
+// The products a shopper may take FREE for what is in their cart, for BOGO
+// offers (pooled and per-product mapped). Built from the offer's own rules and
+// live product data, never from the client:
+//  - the product must be one a paid unit in the cart is allowed to earn
+//    (offer mapping; pooled offers allow every eligible product),
+//  - it must cost no more than that paid unit (the price rule),
+//  - it must be ACTIVE, not excluded and in stock (component stock included).
+// Ranked by saving (price, highest first), then catalogue order, then name.
+// This is DISPLAY data: the allocation engine re-validates whatever is picked.
+async function loadFreeProductOptions(
+  offer: EvaluatedOffer,
+  cartQuantity: Map<string, number>
+): Promise<FreeProductOption[]> {
+  if (offer.type !== "BOGO" || offer.payerGroups.length === 0) return [];
+
+  const candidateIds = [...new Set(offer.payerGroups.flatMap((g) => g.allowedFree))];
+  if (candidateIds.length === 0) return [];
+  const docs = await Product.find({ _id: { $in: candidateIds }, status: "ACTIVE" })
+    .select("name slug sku status categoryId pricing mrpDisplay inventory inventoryTracking sortOrder weightPerPackGrams numberOfPacks")
+    .lean();
+  if (docs.length === 0) return [];
+
+  const scope = await buildScopeForOffer({
+    applyToAll: offer.rules.applyToAll,
+    eligibleProductIds: offer.rules.eligibleProductIds,
+    eligibleCategoryIds: offer.rules.eligibleCategoryIds,
+    excludedProductIds: offer.rules.excludedProductIds,
+    excludedCategoryIds: offer.rules.excludedCategoryIds,
+  } as unknown as Parameters<typeof buildScopeForOffer>[0]);
+  const candidates = docs.filter(
+    (d) => !scope.excludedProductIds.has(d._id.toString()) && !scope.excludedCategoryIds.has(d.categoryId.toString())
+  );
+
+  const componentIds = [
+    ...new Set(candidates.flatMap((d) => resolveEffectiveComponents(d as unknown as PricedProduct).map((c) => c.productId))),
+  ];
+  const [componentStock, images] = await Promise.all([
+    loadComponentStock(componentIds),
+    getPrimaryImageUrlMap(candidates.map((d) => d._id.toString())),
+  ]);
+
+  const maxFree = offer.maxFreeUnitsPerOrder;
+  const ranked: { option: Omit<FreeProductOption, "rank">; sortOrder: number }[] = [];
+  for (const d of candidates) {
+    const id = d._id.toString();
+    const priceMinor = Math.round(d.pricing.sellingPrice * 100);
+    // Paid units that may earn this product AND cost at least as much (price rule).
+    const compatible = offer.payerGroups
+      .filter((g) => g.allowedFree.includes(id) && priceMinor <= g.unitPriceMinor)
+      .reduce((sum, g) => sum + g.quantity, 0);
+    if (compatible === 0) continue;
+
+    const stock = calculateMaximumAvailableQuantity(resolveEffectiveComponents(d as unknown as PricedProduct), componentStock);
+    if (stock <= 0) continue; // out of stock: never suggested
+
+    const claimable = Math.min(maxFree, Math.floor(compatible / offer.buyQuantity));
+    ranked.push({
+      sortOrder: d.sortOrder ?? 0,
+      option: {
+        productId: id,
+        slug: d.slug,
+        name: d.name,
+        imageUrl: images.get(id) ?? null,
+        unitPrice: d.pricing.sellingPrice,
+        mrp: d.pricing.mrp,
+        packSize: packSizeLabel(d.weightPerPackGrams, d.numberOfPacks),
+        claimableUnits: claimable,
+        unitsToUnlock: claimable > 0 ? 0 : offer.buyQuantity - compatible,
+        availableQuantity: stock === Infinity ? null : stock,
+        inCartQuantity: cartQuantity.get(id) ?? 0,
+      },
+    });
+  }
+
+  ranked.sort(
+    (a, b) =>
+      b.option.unitPrice - a.option.unitPrice ||
+      a.sortOrder - b.sortOrder ||
+      a.option.name.localeCompare(b.option.name)
+  );
+  return ranked.map(({ option }, i) => ({ ...option, rank: i + 1 }));
 }
 
 export interface RequestedLine {
@@ -536,6 +648,12 @@ export async function previewCheckout(userId: string | null, input: CheckoutPrev
     selection: input.freeSelections,
   });
   const offerDiscount = offerAppliesTo(evaluatedOffer) ? evaluatedOffer.discountAmount : 0;
+  const freeOptions = evaluatedOffer
+    ? await loadFreeProductOptions(
+        evaluatedOffer,
+        new Map(payable.filter((i) => (i.selectionType ?? "UNIT") === "UNIT").map((i) => [i.productId, i.quantity]))
+      )
+    : [];
 
   const itemsWithOffer = items.map((i) => {
     const freeQuantity = evaluatedOffer?.freeByProduct.get(i.productId) ?? 0;
@@ -605,7 +723,7 @@ export async function previewCheckout(userId: string | null, input: CheckoutPrev
     pricing,
     coupon,
     couponError,
-    offer: evaluatedOffer ? toOfferDto(evaluatedOffer) : null,
+    offer: evaluatedOffer ? { ...toOfferDto(evaluatedOffer), freeOptions } : null,
     hasIssues: items.some((i) => i.unavailable || i.insufficientStock),
   };
 }
