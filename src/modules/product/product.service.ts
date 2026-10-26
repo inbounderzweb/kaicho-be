@@ -294,6 +294,7 @@ type LeanProduct = Pick<
   | "seo"
   | "status"
   | "isFeatured"
+  | "mrpDisplay"
   | "sortOrder"
   | "createdBy"
   | "updatedBy"
@@ -325,6 +326,7 @@ function toListItem(
     inventory: doc.inventory,
     status: doc.status,
     isFeatured: doc.isFeatured,
+    mrpDisplay: doc.mrpDisplay ?? "DEFAULT",
     sortOrder: doc.sortOrder,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
@@ -381,6 +383,7 @@ async function toDetailItem(doc: ProductDocument) {
     },
     status: doc.status,
     isFeatured: doc.isFeatured,
+    mrpDisplay: doc.mrpDisplay ?? "DEFAULT",
     sortOrder: doc.sortOrder,
     createdBy: doc.createdBy ? doc.createdBy.toString() : null,
     updatedBy: doc.updatedBy ? doc.updatedBy.toString() : null,
@@ -426,6 +429,7 @@ export async function createProduct(input: CreateProductInput, actorId?: string)
     },
     status: input.status ?? "DRAFT",
     isFeatured: input.isFeatured ?? false,
+    mrpDisplay: input.mrpDisplay ?? "DEFAULT",
     sortOrder: input.sortOrder ?? 0,
     createdBy: actorId,
     updatedBy: actorId,
@@ -475,6 +479,7 @@ export async function updateProductById(id: string, patch: UpdateProductInput, a
   if (patch.shortDescription !== undefined) doc.shortDescription = patch.shortDescription;
   if (patch.description !== undefined) doc.description = patch.description;
   if (patch.isFeatured !== undefined) doc.isFeatured = patch.isFeatured;
+  if (patch.mrpDisplay !== undefined) doc.mrpDisplay = patch.mrpDisplay;
   if (patch.sortOrder !== undefined) doc.sortOrder = patch.sortOrder;
 
   if (patch.slug !== undefined) {
@@ -690,6 +695,7 @@ export async function duplicateProductById(id: string, actorId?: string) {
     },
     status: "DRAFT",
     isFeatured: false,
+    mrpDisplay: original.mrpDisplay ?? "DEFAULT",
     sortOrder: original.sortOrder,
     createdBy: actorId,
     updatedBy: actorId,
@@ -925,6 +931,7 @@ interface PublicListDoc {
   inventory: { stockQuantity: number; lowStockThreshold: number; trackInventory: boolean };
   inventoryTracking?: InventoryTracking;
   isFeatured: boolean;
+  mrpDisplay?: "DEFAULT" | "SHOW" | "HIDE";
   createdAt: Date;
 }
 
@@ -1009,6 +1016,7 @@ async function hydratePublicListItems(docs: PublicListDoc[]) {
         mrp: d.pricing.mrp,
         sellingPrice: d.pricing.sellingPrice,
         discountPercentage,
+        mrpDisplay: d.mrpDisplay ?? "DEFAULT",
       },
       // trackInventory is a policy flag, not a sensitive quantity — exposed
       // so the frontend's quantity-selector cap only applies to products
@@ -1112,7 +1120,7 @@ export async function getPublicProductList(params: PublicProductListParams) {
 
   const [docs, total] = await Promise.all([
     Product.find(filter)
-      .select("name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
+      .select("name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured mrpDisplay createdAt")
       .sort(sortSpec)
       .skip((page - 1) * pageSize)
       .limit(pageSize)
@@ -1251,6 +1259,7 @@ export async function getPublicProductBySlug(slug: string) {
       mrp: doc.pricing.mrp,
       sellingPrice: doc.pricing.sellingPrice,
       discountPercentage,
+      mrpDisplay: doc.mrpDisplay ?? "DEFAULT",
     },
     inventory: { inStock, stockQuantity: effectiveStockQuantity, lowStock, trackInventory: effectiveTrackInventory },
     packOptions,
@@ -1276,7 +1285,7 @@ export async function getRelatedProducts(slug: string, limit = 8) {
   if (!source) return [];
 
   const base = { status: { $in: PUBLIC_STATUSES }, _id: { $ne: source._id } };
-  const projection = "name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt";
+  const projection = "name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured mrpDisplay createdAt";
 
   const sameCategory = await Product.find({ ...base, categoryId: source.categoryId })
     .select(projection)
@@ -1317,7 +1326,7 @@ export async function getProductSummariesByIds(productIds: string[]) {
   if (!validIds.length) return [];
 
   const docs = await Product.find({ _id: { $in: validIds }, status: { $in: PUBLIC_STATUSES } })
-    .select("name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured createdAt")
+    .select("name slug weightPerPackGrams numberOfPacks shortDescription categoryId brandId pricing inventory inventoryTracking isFeatured mrpDisplay createdAt")
     .lean();
 
   return hydratePublicListItems(docs as unknown as PublicListDoc[]);

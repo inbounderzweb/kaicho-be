@@ -1,14 +1,19 @@
 import mongoose from "mongoose";
 import { AppError } from "../../common/errors";
-import { Category, Media, Offer, OfferDocument, OfferUsage, Order, OrderOffer, OfferStatus } from "../../database/models";
+import { Category, Media, Offer, OfferDocument, OfferUsage, Order, OrderOffer, OfferStatus, Product } from "../../database/models";
 import { getStorageProvider } from "../media/storage";
 import {
   computeAutoAllocation,
+  computeDiscountAllocation,
+  computeRoleAutoAllocation,
+  computeRoleSelectionAllocation,
   computeSelectionAllocation,
+  type DiscountRule,
   type EngineLine,
   type EngineResult,
   type OfferEngineRule,
   type RejectedSelection,
+  type RoleLine,
 } from "./offerEngine";
 
 // The offer domain layer. Imports only models + AppError + the pure engine —
@@ -61,6 +66,8 @@ export async function loadOfferImageMap(mediaIds: unknown[]): Promise<Map<string
 export interface OfferScope {
   applyToAll: boolean;
   productIds: Set<string>;
+  /** BOGO: products that may be given free (empty = legacy pooled offer). */
+  freeProductIds: Set<string>;
   categoryIds: Set<string>;
   excludedProductIds: Set<string>;
   excludedCategoryIds: Set<string>;
@@ -69,7 +76,7 @@ export interface OfferScope {
 type ScopeSource = Pick<
   OfferDocument,
   "applyToAll" | "eligibleProductIds" | "eligibleCategoryIds" | "excludedProductIds" | "excludedCategoryIds"
->;
+> & { freeProductIds?: OfferDocument["freeProductIds"] };
 
 /** categoryId -> itself plus every descendant, from ONE query over the (tiny) category tree. */
 async function loadDescendantsMap(categoryIds: string[]): Promise<Map<string, string[]>> {
@@ -116,6 +123,7 @@ function buildScope(offer: ScopeSource, descendants: Map<string, string[]>): Off
     // stop matching everything and fall back to their explicit lists).
     applyToAll: false,
     productIds: new Set(offer.eligibleProductIds.map(String)),
+    freeProductIds: new Set((offer.freeProductIds ?? []).map(String)),
     // Offers cover only explicitly selected PRODUCTS. Eligible categories are
     // ignored (legacy data), so a category can never blanket-badge the catalog.
     categoryIds: new Set<string>(),
@@ -128,6 +136,36 @@ function buildScope(offer: ScopeSource, descendants: Map<string, string[]>): Off
 export function isProductEligible(scope: OfferScope, productId: string, categoryId: string): boolean {
   if (scope.excludedProductIds.has(productId) || scope.excludedCategoryIds.has(categoryId)) return false;
   return scope.applyToAll || scope.productIds.has(productId) || scope.categoryIds.has(categoryId);
+}
+
+/** Can this product be handed out free by the offer? Exclusions still win. */
+export function isProductFreeCandidate(scope: OfferScope, productId: string, categoryId: string): boolean {
+  if (scope.excludedProductIds.has(productId) || scope.excludedCategoryIds.has(categoryId)) return false;
+  return scope.freeProductIds.has(productId);
+}
+
+/**
+ * How the offer is evaluated:
+ *  - PERCENTAGE / FIXED : a discount on every unit of the eligible products
+ *  - BOGO_POOL          : legacy Buy X Get 1 — the eligible products are both bought and free (the
+ *                         free unit never costs more than the unit it is paired with). Used by offers
+ *                         made before free products existed, and when the free list equals the eligible list.
+ *  - BOGO_ROLES         : buy from the eligible list, receive a unit from the (different) free list
+ */
+export type OfferMode = "PERCENTAGE" | "FIXED" | "BOGO_POOL" | "BOGO_ROLES";
+
+export function getOfferMode(offer: {
+  type: OfferDocument["type"];
+  eligibleProductIds: unknown[];
+  freeProductIds?: unknown[];
+}): OfferMode {
+  if (offer.type === "PERCENTAGE") return "PERCENTAGE";
+  if (offer.type === "FIXED") return "FIXED";
+  const free = new Set((offer.freeProductIds ?? []).map(String));
+  if (free.size === 0) return "BOGO_POOL";
+  const eligible = new Set(offer.eligibleProductIds.map(String));
+  const same = free.size === eligible.size && [...free].every((id) => eligible.has(id));
+  return same ? "BOGO_POOL" : "BOGO_ROLES";
 }
 
 /** Scope for ONE offer (admin simulator). Checkout/storefront build many at once via a shared descendants map. */
@@ -173,14 +211,29 @@ export interface FreeSelection {
 
 export interface EvaluatedOffer {
   offerId: string;
+  /** The offer's customer-facing title. */
   name: string;
+  type: OfferDocument["type"];
+  mode: OfferMode;
+  /** PERCENTAGE offers. */
+  discountPercent: number | null;
+  /** FIXED offers: rupees off each unit. */
+  discountAmountPerUnit: number | null;
   description: string | null;
   buyQuantity: number;
   maxFreeUnitsPerOrder: number;
   minPaidUnitPrice: number;
   allowCouponStacking: boolean;
-  /** Cart products this offer covers (eligible, active, in stock) — lets the cart UI offer them as free picks. */
+  /** Cart products this offer covers (eligible, active, in stock). */
   eligibleProductIds: string[];
+  /** BOGO: products configured as free (empty on legacy offers). */
+  freeProductIds: string[];
+  /** BOGO: cart products the shopper may pick as their free item. */
+  freeCandidateProductIds: string[];
+  /** BOGO with a separate free list: nothing from that list is in the cart yet. */
+  needsFreeProduct: boolean;
+  /** productId -> rupees taken off that product's whole line (BOGO: the free units' price). */
+  discountByProduct: Map<string, number>;
   /** Rupees off. 0 when the offer is live but nothing qualified yet. */
   discountAmount: number;
   freeUnits: number;
@@ -196,6 +249,7 @@ export interface EvaluatedOffer {
     eligibleCategoryIds: string[];
     excludedProductIds: string[];
     excludedCategoryIds: string[];
+    freeProductIds: string[];
   };
 }
 
@@ -226,49 +280,120 @@ export function evaluateOfferAgainstLines(
   lines: OfferCartLine[],
   selection?: FreeSelection[]
 ): EvaluatedOffer {
-  const engineLines: EngineLine[] = lines
-    .filter((l) => l.quantity > 0 && isProductEligible(scope, l.productId, l.categoryId))
-    .map((l) => ({
-      productId: l.productId,
-      unitPriceMinor: Math.round(l.unitPrice * 100),
-      quantity: l.quantity,
-    }));
+  const mode = getOfferMode(offer);
   const rule = toEngineRule(offer);
-  const eligibleIds = new Set(engineLines.map((l) => l.productId));
+  const priceMinor = new Map<string, number>();
+  for (const l of lines) priceMinor.set(l.productId, Math.round(l.unitPrice * 100));
+
+  const eligibleLines: EngineLine[] = lines
+    .filter((l) => l.quantity > 0 && isProductEligible(scope, l.productId, l.categoryId))
+    .map((l) => ({ productId: l.productId, unitPriceMinor: Math.round(l.unitPrice * 100), quantity: l.quantity }));
+  const eligibleIds = new Set(eligibleLines.map((l) => l.productId));
+
+  let result: EngineResult;
+  let discountMinorByProduct = new Map<string, number>();
+  let freeCandidateIds: string[] = [];
 
   // "I'll choose" with nothing actually picked is the same as no preference:
   // the best automatic allocation applies. Treating an empty list as "the
   // customer wants no free item" would silently charge them for everything.
   const picks = selection?.filter((s) => s.quantity > 0);
 
-  let result: EngineResult;
-  if (picks && picks.length > 0) {
-    // Picks for a product this offer doesn't cover are reported, not dropped.
-    const covered = picks.filter((s) => eligibleIds.has(s.productId));
-    result = computeSelectionAllocation(engineLines, covered, rule);
-    for (const s of picks) {
-      if (!eligibleIds.has(s.productId)) {
-        result.rejected.push({
-          productId: s.productId,
-          quantity: s.quantity,
-          reason: "NOT_ELIGIBLE",
-          message: "This item doesn't qualify for the offer.",
-        });
+  if (mode === "PERCENTAGE" || mode === "FIXED") {
+    const discountRule: DiscountRule =
+      mode === "PERCENTAGE"
+        ? { kind: "PERCENTAGE", percent: offer.discountPercent ?? 0 }
+        : { kind: "FIXED", amountMinor: Math.round((offer.discountAmount ?? 0) * 100) };
+    const allocation = computeDiscountAllocation(eligibleLines, discountRule);
+    discountMinorByProduct = allocation.discountMinorByProduct;
+    result = {
+      freeByProduct: new Map(),
+      freeUnits: 0,
+      discountMinor: allocation.discountMinor,
+      pairs: [],
+      rejected: [],
+      limitReached: false,
+      unitsToNextFree: 0,
+      needsFreeProduct: false,
+    };
+  } else if (mode === "BOGO_ROLES") {
+    const roleLines: RoleLine[] = lines
+      .filter((l) => l.quantity > 0)
+      .map((l) => ({
+        productId: l.productId,
+        unitPriceMinor: Math.round(l.unitPrice * 100),
+        quantity: l.quantity,
+        canPay: isProductEligible(scope, l.productId, l.categoryId),
+        canFree: isProductFreeCandidate(scope, l.productId, l.categoryId),
+      }))
+      .filter((l) => l.canPay || l.canFree);
+    freeCandidateIds = roleLines.filter((l) => l.canFree).map((l) => l.productId);
+    const candidateSet = new Set(freeCandidateIds);
+
+    if (picks && picks.length > 0) {
+      const covered = picks.filter((s) => candidateSet.has(s.productId));
+      result = computeRoleSelectionAllocation(roleLines, covered, rule);
+      for (const s of picks) {
+        if (!candidateSet.has(s.productId)) {
+          result.rejected.push({
+            productId: s.productId,
+            quantity: s.quantity,
+            reason: "NOT_ELIGIBLE",
+            message: "This item isn't one of the free items for this offer.",
+          });
+        }
       }
+    } else {
+      result = computeRoleAutoAllocation(roleLines, rule);
     }
   } else {
-    result = computeAutoAllocation(engineLines, rule);
+    // Legacy pooled BOGO.
+    freeCandidateIds = [...eligibleIds];
+    if (picks && picks.length > 0) {
+      // Picks for a product this offer doesn't cover are reported, not dropped.
+      const covered = picks.filter((s) => eligibleIds.has(s.productId));
+      result = computeSelectionAllocation(eligibleLines, covered, rule);
+      for (const s of picks) {
+        if (!eligibleIds.has(s.productId)) {
+          result.rejected.push({
+            productId: s.productId,
+            quantity: s.quantity,
+            reason: "NOT_ELIGIBLE",
+            message: "This item doesn't qualify for the offer.",
+          });
+        }
+      }
+    } else {
+      result = computeAutoAllocation(eligibleLines, rule);
+    }
   }
+
+  if (mode === "BOGO_POOL" || mode === "BOGO_ROLES") {
+    // A free unit takes its own unit price off; the line it belongs to keeps its full total.
+    for (const [productId, qty] of result.freeByProduct) {
+      discountMinorByProduct.set(productId, (priceMinor.get(productId) ?? 0) * qty);
+    }
+  }
+
+  const coveredIds = mode === "BOGO_ROLES" ? new Set([...eligibleIds, ...freeCandidateIds]) : eligibleIds;
 
   return {
     offerId: offer._id.toString(),
     name: offer.name,
+    type: offer.type,
+    mode,
+    discountPercent: mode === "PERCENTAGE" ? offer.discountPercent ?? null : null,
+    discountAmountPerUnit: mode === "FIXED" ? offer.discountAmount ?? null : null,
     description: offer.description ?? null,
     buyQuantity: offer.buyQuantity,
     maxFreeUnitsPerOrder: offer.maxFreeUnitsPerOrder,
     minPaidUnitPrice: offer.minPaidUnitPrice ?? 0,
     allowCouponStacking: offer.allowCouponStacking ?? false,
-    eligibleProductIds: [...eligibleIds],
+    eligibleProductIds: [...coveredIds],
+    freeProductIds: (offer.freeProductIds ?? []).map(String),
+    freeCandidateProductIds: freeCandidateIds,
+    needsFreeProduct: result.needsFreeProduct,
+    discountByProduct: new Map([...discountMinorByProduct].map(([id, minor]) => [id, minor / 100])),
     discountAmount: result.discountMinor / 100,
     freeUnits: result.freeUnits,
     freeByProduct: result.freeByProduct,
@@ -282,6 +407,7 @@ export function evaluateOfferAgainstLines(
       eligibleCategoryIds: offer.eligibleCategoryIds.map(String),
       excludedProductIds: offer.excludedProductIds.map(String),
       excludedCategoryIds: offer.excludedCategoryIds.map(String),
+      freeProductIds: (offer.freeProductIds ?? []).map(String),
     },
   };
 }
@@ -314,7 +440,9 @@ export async function evaluateBestOffer(params: {
   let best: EvaluatedOffer | null = null;
   for (const offer of offers) {
     const scope = buildScope(offer, descendants);
-    const touches = params.lines.some((l) => isProductEligible(scope, l.productId, l.categoryId));
+    const touches = params.lines.some(
+      (l) => isProductEligible(scope, l.productId, l.categoryId) || isProductFreeCandidate(scope, l.productId, l.categoryId)
+    );
     if (!touches) continue;
     if (await isOfferExhaustedForUser(offer, params.userId)) continue;
 
@@ -333,15 +461,40 @@ export async function evaluateBestOffer(params: {
 
 // ---- Order snapshot ----
 
+export interface SnapshotLine {
+  productId: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+}
+
 export function toOrderOfferSnapshot(
   evaluated: EvaluatedOffer,
-  freeItems: { productId: string; sku: string; name: string; quantity: number; unitPrice: number }[]
+  freeItems: SnapshotLine[],
+  /** PERCENTAGE / FIXED offers: every discounted line (quantity = units on the line). */
+  discountedItems: SnapshotLine[] = []
 ): OrderOffer {
   const oid = (id: string) => new mongoose.Types.ObjectId(id);
+  const isDiscountType = evaluated.type === "PERCENTAGE" || evaluated.type === "FIXED";
   return {
     offerId: oid(evaluated.offerId),
     name: evaluated.name,
-    type: "BOGO",
+    type: evaluated.type,
+    ...(evaluated.discountPercent != null ? { discountPercent: evaluated.discountPercent } : {}),
+    ...(evaluated.discountAmountPerUnit != null ? { discountAmountPerUnit: evaluated.discountAmountPerUnit } : {}),
+    ...(isDiscountType
+      ? {
+          discountedItems: discountedItems.map((d) => ({
+            productId: oid(d.productId),
+            sku: d.sku,
+            name: d.name,
+            quantity: d.quantity,
+            unitPrice: d.unitPrice,
+            discount: evaluated.discountByProduct.get(d.productId) ?? 0,
+          })),
+        }
+      : {}),
     buyQuantity: evaluated.buyQuantity,
     maxFreeUnitsPerOrder: evaluated.maxFreeUnitsPerOrder,
     minPaidUnitPrice: evaluated.minPaidUnitPrice,
@@ -372,6 +525,7 @@ export function toOrderOfferSnapshot(
       eligibleCategoryIds: evaluated.rules.eligibleCategoryIds.map(oid),
       excludedProductIds: evaluated.rules.excludedProductIds.map(oid),
       excludedCategoryIds: evaluated.rules.excludedCategoryIds.map(oid),
+      ...(evaluated.rules.freeProductIds.length > 0 ? { freeProductIds: evaluated.rules.freeProductIds.map(oid) } : {}),
     },
   };
 }
@@ -499,9 +653,26 @@ export async function listPublicActiveOffers(now: Date = new Date()) {
     return [...out];
   };
   const images = await loadOfferImageMap(live.map((o) => o.imageMediaId));
+  // Names for the products an offer talks about ("buy X, get Y free"), in one query.
+  const referencedIds = [...new Set(live.flatMap((o) => [...o.eligibleProductIds, ...(o.freeProductIds ?? [])].map(String)))];
+  const referenced = referencedIds.length
+    ? await Product.find({ _id: { $in: referencedIds } }).select("name slug").lean()
+    : [];
+  const productNames: Record<string, { name: string; slug: string }> = {};
+  for (const p of referenced) productNames[p._id.toString()] = { name: p.name, slug: p.slug };
   return live.map((o) => ({
     id: o._id.toString(),
     name: o.name,
+    mode: getOfferMode(o),
+    discountPercent: o.type === "PERCENTAGE" ? o.discountPercent ?? null : null,
+    discountAmount: o.type === "FIXED" ? o.discountAmount ?? null : null,
+    freeProductIds: (o.freeProductIds ?? []).map(String),
+    productNames: Object.fromEntries(
+      [...o.eligibleProductIds, ...(o.freeProductIds ?? [])]
+        .map(String)
+        .filter((id) => productNames[id])
+        .map((id) => [id, productNames[id]])
+    ),
     description: o.description ?? null,
     image: o.imageMediaId ? images.get(o.imageMediaId.toString()) ?? null : null,
     type: o.type,

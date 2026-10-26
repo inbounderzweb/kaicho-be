@@ -14,9 +14,11 @@ import { getMediaDocById, attachMediaToEntity, detachMedia } from "../media/medi
 import {
   evaluateOfferAgainstLines,
   getEffectiveOfferStatus,
+  getOfferMode,
   loadOfferImageMap,
   type OfferCartLine,
 } from "./offer.service";
+import { getPrimaryImageUrlMap } from "../product/product.service";
 import { buildScopeForOffer } from "./offer.service";
 import type {
   OfferCreateInput,
@@ -47,7 +49,25 @@ function rethrowIfValidation(err: unknown): never {
 // rules up-front so the admin gets a 400 with the real reason.
 function assertValidOfferConfig(doc: OfferDocument): void {
   if (doc.eligibleProductIds.length === 0) {
-    throw new AppError("Choose at least one eligible product", 400);
+    throw new AppError(
+      doc.type === "BOGO" ? "Choose at least one product the customer must buy" : "Choose at least one eligible product",
+      400
+    );
+  }
+  if (doc.type === "PERCENTAGE") {
+    if (!(doc.discountPercent && doc.discountPercent > 0 && doc.discountPercent <= 100)) {
+      throw new AppError("Enter a discount percentage between 0 and 100", 400);
+    }
+  }
+  if (doc.type === "FIXED" && !(doc.discountAmount && doc.discountAmount > 0)) {
+    throw new AppError("Enter a discount amount greater than 0", 400);
+  }
+  if (doc.type !== "BOGO" && (doc.freeProductIds?.length ?? 0) > 0) {
+    throw new AppError("Free products only apply to Buy X Get Y Free offers", 400);
+  }
+  const excluded = new Set(doc.excludedProductIds.map(String));
+  if ((doc.freeProductIds ?? []).some((id) => excluded.has(String(id)))) {
+    throw new AppError("A free product can't also be an excluded product", 400);
   }
   if (doc.startsAt && doc.endsAt && doc.endsAt.getTime() <= doc.startsAt.getTime()) {
     throw new AppError("End date must be after the start date", 400);
@@ -55,6 +75,24 @@ function assertValidOfferConfig(doc: OfferDocument): void {
   if (doc.usageLimit != null && doc.usageLimitPerUser != null && doc.usageLimitPerUser > doc.usageLimit) {
     throw new AppError("Per-user usage limit cannot exceed the total usage limit", 400);
   }
+}
+
+/**
+ * Extra rules for an offer that is (or is about to be) live. Drafts and
+ * disabled offers may be saved incomplete; nothing incomplete may be activated.
+ */
+function assertReadyToActivate(doc: OfferDocument): void {
+  assertValidOfferConfig(doc);
+  if (doc.type === "BOGO" && (doc.freeProductIds?.length ?? 0) === 0) {
+    throw new AppError("Choose the free product(s) before activating a Buy X Get Y Free offer", 409);
+  }
+}
+
+/** Keeps only the fields that belong to the offer's type, so switching type never leaves stale rules behind. */
+function normaliseForType(doc: OfferDocument): void {
+  if (doc.type !== "PERCENTAGE") doc.discountPercent = undefined;
+  if (doc.type !== "FIXED") doc.discountAmount = undefined;
+  if (doc.type !== "BOGO") doc.freeProductIds = [];
 }
 
 // ---- Referenced-entity validation ----
@@ -97,6 +135,9 @@ function toAdminOfferListItem(doc: OfferDocument) {
     applyToAll: doc.applyToAll,
     eligibleProductCount: doc.eligibleProductIds.length,
     eligibleCategoryCount: doc.eligibleCategoryIds.length,
+    freeProductCount: doc.freeProductIds?.length ?? 0,
+    discountPercent: doc.discountPercent ?? null,
+    discountAmount: doc.discountAmount ?? null,
     startsAt: doc.startsAt ? doc.startsAt.toISOString() : null,
     endsAt: doc.endsAt ? doc.endsAt.toISOString() : null,
     usageLimit: doc.usageLimit ?? null,
@@ -231,10 +272,10 @@ export async function getOfferAdmin(id: string) {
   const doc = await Offer.findById(id).exec();
   if (!doc) throw new AppError("Offer not found", 404);
 
-  const allProductIds = [...doc.eligibleProductIds, ...doc.excludedProductIds];
+  const allProductIds = [...doc.eligibleProductIds, ...(doc.freeProductIds ?? []), ...doc.excludedProductIds];
   const allCategoryIds = [...doc.eligibleCategoryIds, ...doc.excludedCategoryIds];
 
-  const [activityDocs, products, categories, images, stats] = await Promise.all([
+  const [activityDocs, products, categories, images, stats, productImages] = await Promise.all([
     OfferActivity.find({ offerId: doc._id })
       .sort({ createdAt: -1 })
       .limit(ACTIVITY_LIMIT)
@@ -249,6 +290,7 @@ export async function getOfferAdmin(id: string) {
       { $match: { offerId: doc._id } },
       { $group: { _id: null, orders: { $sum: 1 }, freeUnits: { $sum: "$freeUnits" }, discount: { $sum: "$discountAmount" } } },
     ]),
+    allProductIds.length ? getPrimaryImageUrlMap(allProductIds) : new Map<string, string>(),
   ]);
 
   const productMap = new Map(products.map((p) => [p._id.toString(), p]));
@@ -261,6 +303,7 @@ export async function getOfferAdmin(id: string) {
       sku: p?.sku ?? null,
       sellingPrice: p?.pricing.sellingPrice ?? null,
       status: p?.status ?? null,
+      imageUrl: productImages.get(pid.toString()) ?? null,
     };
   };
   const categoryRef = (cid: mongoose.Types.ObjectId) => ({
@@ -273,6 +316,7 @@ export async function getOfferAdmin(id: string) {
     description: doc.description ?? null,
     image: doc.imageMediaId ? images.get(doc.imageMediaId.toString()) ?? null : null,
     eligibleProducts: doc.eligibleProductIds.map(productRef),
+    freeProducts: (doc.freeProductIds ?? []).map(productRef),
     eligibleCategories: doc.eligibleCategoryIds.map(categoryRef),
     excludedProducts: doc.excludedProductIds.map(productRef),
     excludedCategories: doc.excludedCategoryIds.map(categoryRef),
@@ -309,6 +353,7 @@ export async function createOfferAdmin(input: OfferCreateInput, adminId?: string
 
   await Promise.all([
     assertIdsExist("Product", input.eligibleProductIds, "Eligible products"),
+    assertIdsExist("Product", input.freeProductIds, "Free products"),
     assertIdsExist("Category", input.eligibleCategoryIds, "Eligible categories"),
     assertIdsExist("Product", input.excludedProductIds, "Excluded products"),
     assertIdsExist("Category", input.excludedCategoryIds, "Excluded categories"),
@@ -327,6 +372,9 @@ export async function createOfferAdmin(input: OfferCreateInput, adminId?: string
       eligibleCategoryIds: input.eligibleCategoryIds,
       excludedProductIds: input.excludedProductIds,
       excludedCategoryIds: input.excludedCategoryIds,
+      freeProductIds: input.type === "BOGO" ? input.freeProductIds : [],
+      discountPercent: input.type === "PERCENTAGE" ? input.discountPercent ?? undefined : undefined,
+      discountAmount: input.type === "FIXED" ? input.discountAmount ?? undefined : undefined,
       buyQuantity: input.buyQuantity,
       maxFreeUnitsPerOrder: input.maxFreeUnitsPerOrder,
       minPaidUnitPrice: input.minPaidUnitPrice,
@@ -357,8 +405,18 @@ export async function createOfferAdmin(input: OfferCreateInput, adminId?: string
 
 // ---- Update ----
 
+const TYPE_LABELS: Record<OfferDocument["type"], string> = {
+  BOGO: "Buy X Get Y Free",
+  PERCENTAGE: "Percentage discount",
+  FIXED: "Fixed amount discount",
+};
+
 const TRACKED_FIELDS: { label: string; format: (d: OfferDocument) => string }[] = [
-  { label: "Name", format: (d) => d.name },
+  { label: "Title", format: (d) => d.name },
+  { label: "Offer type", format: (d) => TYPE_LABELS[d.type] },
+  { label: "Discount percentage", format: (d) => (d.discountPercent != null ? `${d.discountPercent}%` : "—") },
+  { label: "Discount amount", format: (d) => fmtMoney(d.discountAmount) },
+  { label: "Free products", format: (d) => fmtCount(d.freeProductIds ?? []) },
   { label: "Description", format: (d) => d.description ?? "—" },
   { label: "Apply to all products", format: (d) => (d.applyToAll ? "Yes" : "No") },
   { label: "Eligible products", format: (d) => fmtCount(d.eligibleProductIds) },
@@ -383,6 +441,7 @@ export async function updateOfferAdmin(id: string, patch: OfferUpdateInput, admi
 
   await Promise.all([
     patch.eligibleProductIds ? assertIdsExist("Product", patch.eligibleProductIds, "Eligible products") : null,
+    patch.freeProductIds ? assertIdsExist("Product", patch.freeProductIds, "Free products") : null,
     patch.eligibleCategoryIds ? assertIdsExist("Category", patch.eligibleCategoryIds, "Eligible categories") : null,
     patch.excludedProductIds ? assertIdsExist("Product", patch.excludedProductIds, "Excluded products") : null,
     patch.excludedCategoryIds ? assertIdsExist("Category", patch.excludedCategoryIds, "Excluded categories") : null,
@@ -391,6 +450,10 @@ export async function updateOfferAdmin(id: string, patch: OfferUpdateInput, admi
   const before = TRACKED_FIELDS.map((f) => f.format(doc));
 
   if (patch.name !== undefined) doc.name = patch.name;
+  if (patch.type !== undefined) doc.type = patch.type;
+  if (patch.freeProductIds !== undefined) doc.freeProductIds = patch.freeProductIds.map(oid);
+  if (patch.discountPercent !== undefined) doc.discountPercent = patch.discountPercent ?? undefined;
+  if (patch.discountAmount !== undefined) doc.discountAmount = patch.discountAmount ?? undefined;
   if (patch.description !== undefined) doc.description = patch.description || undefined;
   if (patch.applyToAll !== undefined) doc.applyToAll = patch.applyToAll;
   if (patch.eligibleProductIds !== undefined) doc.eligibleProductIds = patch.eligibleProductIds.map(oid);
@@ -406,7 +469,22 @@ export async function updateOfferAdmin(id: string, patch: OfferUpdateInput, admi
   if (patch.usageLimit !== undefined) doc.usageLimit = patch.usageLimit ?? null;
   if (patch.usageLimitPerUser !== undefined) doc.usageLimitPerUser = patch.usageLimitPerUser ?? null;
 
+  // Fields sent for a type they don't belong to are an error, not silently dropped…
+  if (patch.type === undefined || patch.type === doc.type) {
+    if (doc.type !== "BOGO" && (patch.freeProductIds?.length ?? 0) > 0) {
+      throw new AppError("Free products only apply to Buy X Get Y Free offers", 400);
+    }
+  }
+  // …but leftovers from a previous type are cleared when the type changes.
+  if (patch.type !== undefined) {
+    if (doc.type !== "BOGO" && patch.freeProductIds === undefined) doc.freeProductIds = [];
+    if (doc.type !== "PERCENTAGE" && patch.discountPercent === undefined) doc.discountPercent = undefined;
+    if (doc.type !== "FIXED" && patch.discountAmount === undefined) doc.discountAmount = undefined;
+  }
   assertValidOfferConfig(doc);
+  // Editing a live offer must leave it live-ready.
+  if (doc.status === "ACTIVE") assertReadyToActivate(doc);
+  normaliseForType(doc);
   if (doc.usageLimit != null && doc.usageLimit < doc.usedCount) {
     throw new AppError(`Total usage limit can't be below the ${doc.usedCount} redemption(s) already recorded`, 400);
   }
@@ -465,8 +543,15 @@ export async function setOfferStatusAdmin(
   const next = resolveStoredStatus(requested, doc.startsAt, doc.endsAt);
   if (doc.status === next) return getOfferAdmin(id);
 
-  if (next === "ACTIVE" && doc.eligibleProductIds.length === 0) {
-    throw new AppError("Choose eligible products before activating", 409);
+  if (next === "ACTIVE") {
+    if (doc.eligibleProductIds.length === 0) {
+      throw new AppError("Choose eligible products before activating", 409);
+    }
+    assertReadyToActivate(doc);
+    await Promise.all([
+      assertIdsExist("Product", doc.eligibleProductIds.map(String), "Eligible products"),
+      assertIdsExist("Product", (doc.freeProductIds ?? []).map(String), "Free products"),
+    ]);
   }
 
   doc.status = next;
@@ -475,6 +560,35 @@ export async function setOfferStatusAdmin(
 
   await logActivity({ offerId: doc._id, adminId, action: next === "DISABLED" ? "DISABLED" : "ACTIVATED", note });
   return getOfferAdmin(id);
+}
+
+// ---- Delete ----
+
+/**
+ * Permanently removes an offer. Only a draft or deactivated offer that no
+ * order has ever used can go: a live offer must be deactivated first, and
+ * once an order redeemed it the offer is history (orders keep their own frozen
+ * copy, but the usage trail and reports still point here) — deactivate it instead.
+ */
+export async function deleteOfferAdmin(id: string): Promise<void> {
+  if (!isValidObjectId(id)) throw new AppError("Offer not found", 404);
+  const doc = await Offer.findById(id).exec();
+  if (!doc) throw new AppError("Offer not found", 404);
+
+  if (doc.status === "ACTIVE") {
+    throw new AppError("Deactivate this offer before deleting it", 409);
+  }
+  const redeemed = doc.usedCount > 0 || (await OfferUsage.exists({ offerId: doc._id }));
+  if (redeemed) {
+    throw new AppError("This offer has been used on orders, so it can't be deleted. Deactivate it instead.", 409);
+  }
+
+  const imageMediaId = doc.imageMediaId?.toString();
+  await doc.deleteOne();
+  await OfferActivity.deleteMany({ offerId: doc._id });
+  if (imageMediaId) {
+    await detachMedia(imageMediaId, { entityType: "OFFER", entityId: id, field: "image" }).catch(() => undefined);
+  }
 }
 
 // ---- Usage history ----
@@ -554,10 +668,12 @@ export async function simulateOfferAdmin(id: string, input: OfferSimulateInput) 
   const result = evaluateOfferAgainstLines(doc, scope, lines, input.freeSelections);
 
   return {
+    type: doc.type,
     discountAmount: result.discountAmount,
     freeUnits: result.freeUnits,
     limitReached: result.limitReached,
     unitsToNextFree: result.unitsToNextFree,
+    needsFreeProduct: result.needsFreeProduct,
     lines: input.items.map((item) => {
       const p = byId.get(item.productId);
       const freeQty = result.freeByProduct.get(item.productId) ?? 0;
@@ -568,6 +684,8 @@ export async function simulateOfferAdmin(id: string, input: OfferSimulateInput) 
         quantity: item.quantity,
         freeQuantity: freeQty,
         paidQuantity: item.quantity - freeQty,
+        discountAmount: result.discountByProduct.get(item.productId) ?? 0,
+        canBeFree: result.freeCandidateProductIds.includes(item.productId),
       };
     }),
     rejected: result.rejected,

@@ -216,7 +216,7 @@ export function toOrderDto(doc: OrderDocument) {
           freeDelivery: doc.coupon.freeDelivery,
         }
       : null,
-    // Frozen BOGO snapshot — null for orders without an offer. Everything
+    // Frozen offer snapshot (BOGO / percentage / fixed) — null for orders without an offer. Everything
     // needed to reproduce the applied offer: paid/free pairing, original
     // prices, discount and the terms in force at order time.
     offer: doc.offer
@@ -230,6 +230,16 @@ export function toOrderDto(doc: OrderDocument) {
           allowCouponStacking: doc.offer.allowCouponStacking,
           freeUnits: doc.offer.freeUnits,
           discountAmount: doc.offer.discountAmount,
+          discountPercent: doc.offer.discountPercent ?? null,
+          discountAmountPerUnit: doc.offer.discountAmountPerUnit ?? null,
+          discountedItems: (doc.offer.discountedItems ?? []).map((d) => ({
+            productId: d.productId.toString(),
+            sku: d.sku,
+            name: d.name,
+            quantity: d.quantity,
+            unitPrice: d.unitPrice,
+            discount: d.discount,
+          })),
           freeItems: doc.offer.freeItems.map((f) => ({
             productId: f.productId.toString(),
             sku: f.sku,
@@ -254,6 +264,7 @@ export function toOrderDto(doc: OrderDocument) {
             eligibleCategoryIds: doc.offer.rules.eligibleCategoryIds.map(String),
             excludedProductIds: doc.offer.rules.excludedProductIds.map(String),
             excludedCategoryIds: doc.offer.rules.excludedCategoryIds.map(String),
+            freeProductIds: (doc.offer.rules.freeProductIds ?? []).map(String),
           },
         }
       : null,

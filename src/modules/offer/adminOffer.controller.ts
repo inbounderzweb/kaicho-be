@@ -9,6 +9,7 @@ import {
   setOfferStatusAdmin,
   listOfferUsagesAdmin,
   simulateOfferAdmin,
+  deleteOfferAdmin,
 } from "./adminOffer.service";
 import type {
   OfferCreateInput,
@@ -60,4 +61,9 @@ export const listOfferUsagesHandler = asyncHandler(async (req: Request, res: Res
   const { page, pageSize } = parsePagination(req);
   const data = await listOfferUsagesAdmin(String(req.params.id), { page, pageSize });
   res.status(200).json({ success: true, data });
+});
+
+export const deleteOfferHandler = asyncHandler(async (req: Request, res: Response) => {
+  await deleteOfferAdmin(String(req.params.id));
+  res.status(200).json({ success: true, message: "Offer deleted", data: null });
 });

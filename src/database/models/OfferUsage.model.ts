@@ -24,7 +24,7 @@ const OfferUsageSchema = new Schema<OfferUsageDocument>(
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     orderId: { type: Schema.Types.ObjectId, ref: "Order", required: true },
     orderNumber: { type: String, required: true },
-    freeUnits: { type: Number, required: true, min: 1 },
+    freeUnits: { type: Number, required: true, min: 0 },
     discountAmount: { type: Number, required: true, min: 0 },
     perUserSeq: { type: Number, required: true, min: 1 },
     usedAt: { type: Date, required: true, default: Date.now },

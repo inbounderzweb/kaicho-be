@@ -17,6 +17,7 @@ export interface RelatedComboSuggestion {
   price: number;
   mrp: number;
   discountPercentage: number;
+  mrpDisplay: "DEFAULT" | "SHOW" | "HIDE";
 }
 
 type MinimalProduct = Pick<ProductDocument, "_id" | "relatedCombo">;
@@ -26,6 +27,7 @@ async function toSuggestion(comboDoc: {
   name: string;
   slug: string;
   pricing: { mrp: number; sellingPrice: number };
+  mrpDisplay?: "DEFAULT" | "SHOW" | "HIDE";
 }): Promise<RelatedComboSuggestion> {
   const imageUrls = await getPrimaryImageUrlMap([comboDoc._id]);
   const { discountPercentage } = computeDiscount(comboDoc.pricing.mrp, comboDoc.pricing.sellingPrice);
@@ -37,6 +39,7 @@ async function toSuggestion(comboDoc: {
     price: comboDoc.pricing.sellingPrice,
     mrp: comboDoc.pricing.mrp,
     discountPercentage,
+    mrpDisplay: comboDoc.mrpDisplay ?? "DEFAULT",
   };
 }
 
@@ -47,7 +50,7 @@ export async function resolveRelatedCombo(product: MinimalProduct): Promise<Rela
     _id: { $ne: product._id }, status: "ACTIVE",
     "inventoryTracking.enabled": true,
     "inventoryTracking.components.productId": product._id,
-  }).select("name slug pricing sortOrder").sort({ sortOrder: 1, _id: 1 }).lean();
+  }).select("name slug pricing mrpDisplay sortOrder").sort({ sortOrder: 1, _id: 1 }).lean();
   const pins = product.relatedCombo?.mode === "MANUAL" ? getPinnedComboIds(product.relatedCombo) : [];
   const pinRank = (id: string) => { const i = pins.indexOf(id); return i === -1 ? pins.length : i; };
   candidates.sort((a, b) => pinRank(a._id.toString()) - pinRank(b._id.toString()));

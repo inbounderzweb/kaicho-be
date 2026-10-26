@@ -73,6 +73,8 @@ const validBody = (productId: string, over: Record<string, unknown> = {}) => ({
   name: `Admin BOGO ${RUN_ID}-${seq++}`,
   type: "BOGO",
   eligibleProductIds: [productId],
+  // A BOGO offer must say what is free; here the bought product is also the free one.
+  freeProductIds: [productId],
   maxFreeUnitsPerOrder: 2,
   ...over,
 });
@@ -234,7 +236,8 @@ describe("admin offers — lifecycle, edit, preview, inspect", () => {
   it("simulates the REAL pairing rule with trusted prices (preview)", async () => {
     const a = await makeProduct(180);
     const dear = await makeProduct(200);
-    const created = await createOffer(validBody(a._id.toString(), { eligibleProductIds: [a._id.toString(), dear._id.toString()] }));
+    const pool = [a._id.toString(), dear._id.toString()];
+    const created = await createOffer(validBody(a._id.toString(), { eligibleProductIds: pool, freeProductIds: pool }));
     const id = created.body.data.offer.id;
 
     const ok = await request(app)

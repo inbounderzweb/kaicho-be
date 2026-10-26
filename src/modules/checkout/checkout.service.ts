@@ -157,7 +157,12 @@ const COUPON_OFFER_CONFLICT = (offerName: string) =>
 function toOfferDto(offer: EvaluatedOffer) {
   return {
     id: offer.offerId,
+    // `name` is the offer's customer-facing title.
     name: offer.name,
+    type: offer.type,
+    mode: offer.mode,
+    discountPercent: offer.discountPercent,
+    discountAmountPerUnit: offer.discountAmountPerUnit,
     description: offer.description,
     buyQuantity: offer.buyQuantity,
     maxFreeUnitsPerOrder: offer.maxFreeUnitsPerOrder,
@@ -165,6 +170,10 @@ function toOfferDto(offer: EvaluatedOffer) {
     allowCouponStacking: offer.allowCouponStacking,
     applied: offer.discountAmount > 0,
     eligibleProductIds: offer.eligibleProductIds,
+    freeProductIds: offer.freeProductIds,
+    freeCandidateProductIds: offer.freeCandidateProductIds,
+    needsFreeProduct: offer.needsFreeProduct,
+    discountByProduct: Object.fromEntries(offer.discountByProduct),
     discountAmount: offer.discountAmount,
     freeUnits: offer.freeUnits,
     limitReached: offer.limitReached,
@@ -191,6 +200,7 @@ export type PricedProduct = {
   status: string;
   categoryId: mongoose.Types.ObjectId;
   pricing: { mrp: number; sellingPrice: number };
+  mrpDisplay?: "DEFAULT" | "SHOW" | "HIDE";
   inventory: { stockQuantity: number; trackInventory: boolean };
   packConfig?: ProductPackConfig;
   inventoryTracking?: InventoryTracking;
@@ -198,7 +208,7 @@ export type PricedProduct = {
 
 async function loadProducts(items: RequestedLine[]): Promise<Map<string, PricedProduct>> {
   const docs = await Product.find({ _id: { $in: items.map((i) => i.productId) } })
-    .select("name sku status categoryId pricing inventory packConfig inventoryTracking")
+    .select("name sku status categoryId pricing mrpDisplay inventory packConfig inventoryTracking")
     .lean();
   return new Map(docs.map((d) => [d._id.toString(), d as unknown as PricedProduct]));
 }
@@ -449,6 +459,7 @@ export async function previewCheckout(userId: string | null, input: CheckoutPrev
         quantity: line.quantity,
         unitPrice: 0,
         mrp: product.pricing.mrp,
+        mrpDisplay: product.mrpDisplay ?? "DEFAULT",
         discount: 0,
         discountPercentage: 0,
         lineTotal: 0,
@@ -493,6 +504,7 @@ export async function previewCheckout(userId: string | null, input: CheckoutPrev
       quantity: resolved.quantity,
       unitPrice: resolved.unitPrice,
       mrp: product.pricing.mrp,
+      mrpDisplay: product.mrpDisplay ?? "DEFAULT",
       discount: resolved.discount,
       discountPercentage: resolved.discountPercentage,
       lineTotal: resolved.lineTotal,
@@ -530,7 +542,13 @@ export async function previewCheckout(userId: string | null, input: CheckoutPrev
     return {
       ...i,
       freeQuantity,
-      offerDiscount: freeQuantity > 0 ? lineTotalFor(i.unitPrice, freeQuantity) : 0,
+      // Straight from the engine so BOGO, percentage and fixed offers all
+      // reach the line the same way (and always sum to the order discount).
+      // Only plain UNIT lines take part in offers (a pack line's blended price isn't a unit price).
+      offerDiscount:
+        offerAppliesTo(evaluatedOffer) && (i.selectionType ?? "UNIT") === "UNIT"
+          ? evaluatedOffer.discountByProduct.get(i.productId) ?? 0
+          : 0,
     };
   });
 
@@ -783,11 +801,11 @@ export async function createCheckout(
       // Persist free units on the lines: lineTotal stays the FULL price so the
       // order can always show original vs. discount.
       for (const item of orderItems) {
+        if ((item.selectionType ?? "UNIT") !== "UNIT") continue;
         const freeQuantity = appliedOffer.freeByProduct.get(item.productId.toString()) ?? 0;
-        if (freeQuantity > 0) {
-          item.freeQuantity = freeQuantity;
-          item.offerDiscount = lineTotalFor(item.unitPrice, freeQuantity);
-        }
+        if (freeQuantity > 0) item.freeQuantity = freeQuantity;
+        const lineDiscount = appliedOffer.discountByProduct.get(item.productId.toString()) ?? 0;
+        if (lineDiscount > 0) item.offerDiscount = lineDiscount;
       }
     }
 
@@ -837,6 +855,16 @@ export async function createCheckout(
                   sku: i.sku,
                   name: i.name,
                   quantity: i.freeQuantity!,
+                  unitPrice: i.unitPrice,
+                })),
+              // Percentage / fixed offers: the whole line is the discounted unit group.
+              orderItems
+                .filter((i) => (i.offerDiscount ?? 0) > 0 && (i.freeQuantity ?? 0) === 0)
+                .map((i) => ({
+                  productId: i.productId.toString(),
+                  sku: i.sku,
+                  name: i.name,
+                  quantity: i.quantity,
                   unitPrice: i.unitPrice,
                 }))
             )

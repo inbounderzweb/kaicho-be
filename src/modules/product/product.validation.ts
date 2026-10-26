@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PRODUCT_STATUSES } from "../../database/models";
+import { MRP_DISPLAY_MODES, PRODUCT_STATUSES } from "../../database/models";
 
 const objectIdField = z
   .string()
@@ -94,6 +94,7 @@ export const createProductSchema = z.object({
   seo: seoSchema.optional(),
   status: z.enum(PRODUCT_STATUSES).optional(),
   isFeatured: z.boolean().optional(),
+  mrpDisplay: z.enum(MRP_DISPLAY_MODES).optional(),
   sortOrder: z.number().int().min(0).optional(),
 });
 
@@ -157,6 +158,7 @@ export const updateProductSchema = z
     seo: partialSeoSchema.optional(),
     status: z.enum(PRODUCT_STATUSES).optional(),
     isFeatured: z.boolean().optional(),
+    mrpDisplay: z.enum(MRP_DISPLAY_MODES).optional(),
     sortOrder: z.number().int().min(0).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {

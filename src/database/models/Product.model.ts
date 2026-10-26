@@ -12,6 +12,11 @@ import { ProductPackConfig, ProductPackConfigSchema, InventoryTracking, Inventor
 export const PRODUCT_STATUSES = ["DRAFT", "ACTIVE", "INACTIVE", "OUT_OF_STOCK", "ARCHIVED"] as const;
 export type ProductStatus = (typeof PRODUCT_STATUSES)[number];
 
+// Per-product override of the store-wide "Show MRP and discount labels" setting.
+// DEFAULT follows the store setting; SHOW / HIDE force it for this product.
+export const MRP_DISPLAY_MODES = ["DEFAULT", "SHOW", "HIDE"] as const;
+export type MrpDisplayMode = (typeof MRP_DISPLAY_MODES)[number];
+
 export interface ProductPricing {
   mrp: number;
   sellingPrice: number;
@@ -96,6 +101,8 @@ export interface ProductDocument extends Document {
 
   status: ProductStatus;
   isFeatured: boolean;
+  /** Absent on older documents — treated as "DEFAULT". */
+  mrpDisplay?: MrpDisplayMode;
   sortOrder: number;
 
   createdBy?: Types.ObjectId;
@@ -184,6 +191,7 @@ const ProductSchema = new Schema<ProductDocument>(
 
     status: { type: String, enum: PRODUCT_STATUSES, default: "DRAFT" },
     isFeatured: { type: Boolean, default: false },
+    mrpDisplay: { type: String, enum: MRP_DISPLAY_MODES, default: "DEFAULT" },
     sortOrder: { type: Number, default: 0, min: 0 },
 
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },

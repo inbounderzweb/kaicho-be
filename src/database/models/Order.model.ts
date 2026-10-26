@@ -217,9 +217,15 @@ export interface OrderOffer {
   maxFreeUnitsPerOrder: number;
   minPaidUnitPrice: number;
   allowCouponStacking: boolean;
+  /** 0 for percentage / fixed-amount offers. */
   freeUnits: number;
   discountAmount: number;
+  /** PERCENTAGE offers: the percentage applied. FIXED offers: the rupees off per unit. */
+  discountPercent?: number;
+  discountAmountPerUnit?: number;
   freeItems: OrderOfferFreeItem[];
+  /** PERCENTAGE / FIXED offers: each discounted line (`discount` = rupees off that whole line). */
+  discountedItems?: OrderOfferFreeItem[];
   pairs: OrderOfferPair[];
   // Eligibility rules as they were at order time.
   rules: {
@@ -228,6 +234,8 @@ export interface OrderOffer {
     eligibleCategoryIds: Types.ObjectId[];
     excludedProductIds: Types.ObjectId[];
     excludedCategoryIds: Types.ObjectId[];
+    /** BOGO: the products that were free. Absent on offers frozen before this existed. */
+    freeProductIds?: Types.ObjectId[];
   };
   // Set once the redemption has been reversed (order cancelled) so a second
   // cancel path can't release it twice.
@@ -413,8 +421,26 @@ const OrderOfferSchema = new Schema<OrderOffer>(
     maxFreeUnitsPerOrder: { type: Number, required: true, min: 1 },
     minPaidUnitPrice: { type: Number, required: true, min: 0, default: 0 },
     allowCouponStacking: { type: Boolean, required: true, default: false },
-    freeUnits: { type: Number, required: true, min: 1 },
+    freeUnits: { type: Number, required: true, min: 0 },
     discountAmount: { type: Number, required: true, min: 0 },
+    discountPercent: { type: Number, min: 0 },
+    discountAmountPerUnit: { type: Number, min: 0 },
+    discountedItems: {
+      type: [
+        new Schema<OrderOfferFreeItem>(
+          {
+            productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+            sku: { type: String, required: true },
+            name: { type: String, required: true },
+            quantity: { type: Number, required: true, min: 1 },
+            unitPrice: { type: Number, required: true, min: 0 },
+            discount: { type: Number, required: true, min: 0 },
+          },
+          { _id: false }
+        ),
+      ],
+      default: undefined,
+    },
     freeItems: {
       type: [
         new Schema<OrderOfferFreeItem>(
@@ -463,6 +489,7 @@ const OrderOfferSchema = new Schema<OrderOffer>(
       eligibleCategoryIds: [{ type: Schema.Types.ObjectId }],
       excludedProductIds: [{ type: Schema.Types.ObjectId }],
       excludedCategoryIds: [{ type: Schema.Types.ObjectId }],
+      freeProductIds: { type: [{ type: Schema.Types.ObjectId }], default: undefined },
     },
     released: { type: Boolean, default: undefined },
   },
