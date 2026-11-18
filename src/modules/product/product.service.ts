@@ -31,6 +31,7 @@ import {
 import { resolveRelatedCombo, toRelatedComboSettingsDto, type RelatedComboSettingsDto } from "./relatedCombo.service";
 import { getDefaultPackRecommendationStrategy } from "../settings/settings.service";
 import type { CreateProductInput, UpdateProductInput } from "./product.validation";
+import { sanitizeProductHtml, isBlankHtml } from "./product.sanitize";
 
 const storage = getStorageProvider();
 
@@ -392,6 +393,15 @@ async function toDetailItem(doc: ProductDocument) {
   };
 }
 
+// Description is rich-text HTML: sanitize on every write, and reject a body
+// that is only empty markup (the editor's "<p></p>") — the plain min(1) in
+// product.validation.ts can't see that.
+function cleanDescription(raw: string): string {
+  const clean = sanitizeProductHtml(raw);
+  if (isBlankHtml(clean)) throw new AppError("Description is required", 400);
+  return clean;
+}
+
 // ---- Create ----
 
 export async function createProduct(input: CreateProductInput, actorId?: string) {
@@ -409,7 +419,7 @@ export async function createProduct(input: CreateProductInput, actorId?: string)
     weightPerPackGrams: input.weightPerPackGrams,
     numberOfPacks: input.numberOfPacks,
     shortDescription: input.shortDescription,
-    description: input.description,
+    description: cleanDescription(input.description),
     categoryId: input.categoryId,
     brandId: input.brandId,
     pricing: input.pricing,
@@ -477,7 +487,7 @@ export async function updateProductById(id: string, patch: UpdateProductInput, a
   if (patch.weightPerPackGrams !== undefined) doc.weightPerPackGrams = patch.weightPerPackGrams;
   if (patch.numberOfPacks !== undefined) doc.numberOfPacks = patch.numberOfPacks;
   if (patch.shortDescription !== undefined) doc.shortDescription = patch.shortDescription;
-  if (patch.description !== undefined) doc.description = patch.description;
+  if (patch.description !== undefined) doc.description = cleanDescription(patch.description);
   if (patch.isFeatured !== undefined) doc.isFeatured = patch.isFeatured;
   if (patch.mrpDisplay !== undefined) doc.mrpDisplay = patch.mrpDisplay;
   if (patch.sortOrder !== undefined) doc.sortOrder = patch.sortOrder;

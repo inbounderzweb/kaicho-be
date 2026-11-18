@@ -27,3 +27,4 @@ export * from "./InstagramPost.model";
 export * from "./YouTubeVideo.model";
 export * from "./UserInteractionEvent.model";
 export * from "./Popup.model";
+export * from "./PageContent.model";

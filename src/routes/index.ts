@@ -26,6 +26,8 @@ import offerRoutes from "../modules/offer/offer.routes";
 import adminOfferRoutes from "../modules/offer/adminOffer.routes";
 import adminInstagramPostRoutes from "../modules/instagramPost/instagramPost.routes";
 import adminYouTubeVideoRoutes from "../modules/youtubeVideo/youtubeVideo.routes";
+import adminSeoRoutes from "../modules/seoContent/seoContent.routes";
+import seoContentPublicRoutes from "../modules/seoContent/seoContentPublic.routes";
 import adminPopupRoutes from "../modules/popup/popup.routes";
 import popupPublicRoutes from "../modules/popup/popupPublic.routes";
 import orderRoutes from "../modules/order/order.routes";
@@ -82,6 +84,7 @@ router.use("/admin/offers", adminOfferRoutes);
 router.use("/admin/instagram-posts", adminInstagramPostRoutes);
 router.use("/admin/youtube-videos", adminYouTubeVideoRoutes);
 router.use("/admin/popups", adminPopupRoutes);
+router.use("/admin/seo", adminSeoRoutes);
 router.use("/admin", adminDashboardRoutes);
 
 // Public, unauthenticated customer-facing catalog routes — separate DTOs
@@ -109,6 +112,7 @@ router.use("/brands", publicCache, brandPublicRoutes);
 router.use("/blogs", publicCache, blogPublicRoutes);
 router.use("/inquiries", inquiryPublicRoutes);
 router.use("/settings", publicCache, settingsPublicRoutes);
+router.use("/page-content", publicCache, seoContentPublicRoutes);
 // Live storefront popups. Sets its own short Cache-Control (not publicCache,
 // whose stale-while-revalidate would delay pausing/expiring a popup).
 router.use("/popups", popupPublicRoutes);

@@ -82,7 +82,7 @@ export const createProductSchema = z.object({
   weightPerPackGrams: z.number().positive().nullable().optional(),
   numberOfPacks: z.number().int().positive().nullable().optional(),
   shortDescription: z.string().trim().min(1, "Short description is required").max(300, "Short description is too long"),
-  description: z.string().trim().min(1, "Description is required").max(20000, "Description is too long"),
+  description: z.string().trim().min(1, "Description is required").max(30000, "Description is too long"),
   categoryId: objectIdField,
   brandId: objectIdField,
   mediaIds: z
@@ -145,7 +145,7 @@ export const updateProductSchema = z
     weightPerPackGrams: z.number().positive().nullable().optional(),
   numberOfPacks: z.number().int().positive().nullable().optional(),
   shortDescription: z.string().trim().min(1, "Short description is required").max(300).optional(),
-    description: z.string().trim().min(1, "Description is required").max(20000).optional(),
+    description: z.string().trim().min(1, "Description is required").max(30000).optional(),
     categoryId: objectIdField.optional(),
     brandId: objectIdField.optional(),
     mediaIds: z

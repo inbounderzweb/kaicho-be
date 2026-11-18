@@ -37,6 +37,9 @@ export interface ProductSeo {
   ogTitle?: string;
   ogDescription?: string;
   ogImageMediaId?: Types.ObjectId;
+  // Absent = index/follow (every product created before SEO Management).
+  robotsIndex?: boolean;
+  robotsFollow?: boolean;
 }
 
 export const RELATED_COMBO_MODES = ["AUTO", "MANUAL", "NONE"] as const;
@@ -147,6 +150,8 @@ const ProductSeoSchema = new Schema<ProductSeo>(
     ogTitle: { type: String, trim: true, maxlength: 70 },
     ogDescription: { type: String, trim: true, maxlength: 200 },
     ogImageMediaId: { type: Schema.Types.ObjectId, ref: "Media" },
+    robotsIndex: { type: Boolean },
+    robotsFollow: { type: Boolean },
   },
   { _id: false }
 );
